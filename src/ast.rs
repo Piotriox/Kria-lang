@@ -50,7 +50,7 @@ pub enum Literal {
     Null,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOperator {
     Add,
     Subtract,

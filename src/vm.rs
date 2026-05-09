@@ -1,7 +1,5 @@
-use crate::bytecode::Instruction;
-use crate::ast::Literal;
+use crate::bytecode::*;
 use std::sync::Arc;
-use smallvec::SmallVec;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -22,242 +20,17 @@ impl std::fmt::Display for Value {
     }
 }
 
-impl Value {
-    #[inline(always)]
-    fn from_literal(literal: Literal) -> Self {
-        match literal {
-            Literal::Number(n) => Value::Number(n),
-            Literal::String(s) => Value::String(Arc::from(s)),
-            Literal::Boolean(b) => Value::Boolean(b),
-            Literal::Null => Value::Null,
-        }
-    }
-
-    #[inline(always)]
-    fn expect_boolean(self) -> Result<bool, String> {
-        match self {
-            Value::Boolean(b) => Ok(b),
-            other => Err(format!("Expected boolean condition, found {:?}", other)),
-        }
-    }
-}
-
 pub struct VM {
-    stack: SmallVec<[Value; 256]>,
+    stack: Vec<Value>,
     globals: Vec<Value>,
 }
 
 impl VM {
     pub fn new() -> Self {
         VM {
-            stack: SmallVec::new(),
+            stack: Vec::with_capacity(256),
             globals: Vec::new(),
         }
-    }
-
-    pub fn execute(&mut self, instructions: &[Instruction]) -> Result<(), String> {
-        let mut ip = 0;
-
-        while ip < instructions.len() {
-            // Hottest instructions first for better CPU branch prediction
-            match &instructions[ip] {
-                // Most frequent in loops
-                Instruction::AddGlobal(index, rhs) => {
-                    if *index >= self.globals.len() {
-                        return Err(format!("AddGlobal: global slot {} is not initialized", index));
-                    }
-                    match &self.globals[*index] {
-                        Value::Number(n) => self.globals[*index] = Value::Number(n + rhs),
-                        other => return Err(format!("AddGlobal expects number, found {:?}", other)),
-                    }
-                    ip += 1;
-                }
-                Instruction::LoadGlobal(index) => {
-                    let value = self.globals.get(*index).cloned().unwrap_or(Value::Null);
-                    self.stack.push(value);
-                    ip += 1;
-                }
-                Instruction::JumpIfFalse(target) => {
-                    let condition = self.pop()?;
-                    let value = condition.expect_boolean()?;
-                    if !value {
-                        ip = *target;
-                    } else {
-                        ip += 1;
-                    }
-                }
-                Instruction::Jump(target) => {
-                    ip = *target;
-                }
-                Instruction::IncGlobal(index) => {
-                    if *index >= self.globals.len() {
-                        return Err(format!("IncGlobal: global slot {} is not initialized", index));
-                    }
-                    match &self.globals[*index] {
-                        Value::Number(n) => self.globals[*index] = Value::Number(n + 1),
-                        other => return Err(format!("IncGlobal expects number, found {:?}", other)),
-                    }
-                    ip += 1;
-                }
-                Instruction::StoreGlobal(index) => {
-                    let value = self.pop()?;
-                    if *index >= self.globals.len() {
-                        self.globals.resize(*index + 1, Value::Null);
-                    }
-                    self.globals[*index] = value;
-                    ip += 1;
-                }
-                // Less frequent instructions
-                Instruction::Constant(literal) => {
-                    self.stack.push(Value::from_literal(literal.clone()));
-                    ip += 1;
-                }
-                Instruction::Add => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(self.add_values(left, right)?);
-                    ip += 1;
-                }
-                Instruction::Subtract => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(self.numeric_op(left, right, |l, r| Ok(l - r))?);
-                    ip += 1;
-                }
-                Instruction::Multiply => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(self.numeric_op(left, right, |l, r| Ok(l * r))?);
-                    ip += 1;
-                }
-                Instruction::Divide => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(self.numeric_op(left, right, |l, r| {
-                        if r == 0 {
-                            Err("Division by zero".to_string())
-                        } else {
-                            Ok(l / r)
-                        }
-                    })?);
-                    ip += 1;
-                }
-                Instruction::AddInt => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => self.stack.push(Value::Number(l + r)),
-                        (l, r) => return Err(format!("AddInt expects numbers, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::SubtractInt => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => self.stack.push(Value::Number(l - r)),
-                        (l, r) => return Err(format!("SubtractInt expects numbers, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::MultiplyInt => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => self.stack.push(Value::Number(l * r)),
-                        (l, r) => return Err(format!("MultiplyInt expects numbers, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::DivideInt => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            if r == 0 {
-                                return Err("Division by zero".to_string());
-                            }
-                            self.stack.push(Value::Number(l / r));
-                        }
-                        (l, r) => return Err(format!("DivideInt expects numbers, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::Equals => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(left == right));
-                    ip += 1;
-                }
-                Instruction::NotEquals => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(left != right));
-                    ip += 1;
-                }
-                Instruction::GreaterThan => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(self.compare_numeric(left, right, |l, r| l > r)?));
-                    ip += 1;
-                }
-                Instruction::LessThan => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(self.compare_numeric(left, right, |l, r| l < r)?));
-                    ip += 1;
-                }
-                Instruction::GreaterOrEqual => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(self.compare_numeric(left, right, |l, r| l >= r)?));
-                    ip += 1;
-                }
-                Instruction::LessOrEqual => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    self.stack.push(Value::Boolean(self.compare_numeric(left, right, |l, r| l <= r)?));
-                    ip += 1;
-                }
-                Instruction::And => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Boolean(l), Value::Boolean(r)) => self.stack.push(Value::Boolean(l && r)),
-                        (l, r) => return Err(format!("And operation requires booleans, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::Or => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
-                    match (left, right) {
-                        (Value::Boolean(l), Value::Boolean(r)) => self.stack.push(Value::Boolean(l || r)),
-                        (l, r) => return Err(format!("Or operation requires booleans, found {:?} and {:?}", l, r)),
-                    }
-                    ip += 1;
-                }
-                Instruction::Not => {
-                    let operand = self.pop()?;
-                    match operand {
-                        Value::Boolean(b) => self.stack.push(Value::Boolean(!b)),
-                        other => return Err(format!("not operation requires boolean, found {:?}", other)),
-                    }
-                    ip += 1;
-                }
-                Instruction::Print => {
-                    let value = self.pop()?;
-                    println!("{}", value);
-                    ip += 1;
-                }
-                Instruction::Pop => {
-                    self.pop()?;
-                    ip += 1;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     #[inline(always)]
@@ -266,36 +39,272 @@ impl VM {
     }
 
     #[inline(always)]
-    fn add_values(&self, left: Value, right: Value) -> Result<Value, String> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => Ok(Value::Number(l + r)),
-            (Value::String(l), Value::String(r)) => {
-                let concatenated = format!("{}{}", l, r);
-                Ok(Value::String(Arc::from(concatenated)))
+    unsafe fn global_unchecked(&self, idx: usize) -> &Value {
+        self.globals.get_unchecked(idx)
+    }
+
+    #[inline(always)]
+    unsafe fn set_global_unchecked(&mut self, idx: usize, val: Value) {
+        *self.globals.get_unchecked_mut(idx) = val;
+    }
+
+    pub fn execute(&mut self, bytecode: &Bytecode) -> Result<(), String> {
+        let code = &bytecode.code;
+        let constants = &bytecode.constants;
+
+        self.globals.resize(bytecode.num_globals, Value::Null);
+        let globals_len = self.globals.len();
+
+        let code_len = code.len();
+        let mut ip: usize = 0;
+
+        while ip < code_len {
+            let opcode = unsafe { *code.get_unchecked(ip) };
+            ip += 1;
+
+            match opcode {
+                OP_LOOP_INC_LESS => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let limit = Bytecode::read_i64(code, ip);
+                    ip += 8;
+                    let loop_start = ip - 13;
+
+                    debug_assert!(idx < globals_len);
+                    let global = unsafe { self.global_unchecked(idx) };
+                    if let Value::Number(n) = *global {
+                        if n < limit {
+                            unsafe { self.set_global_unchecked(idx, Value::Number(n + 1)); }
+                            ip = loop_start;
+                        }
+                    } else {
+                        return Err("LoopIncLess expects number".to_string());
+                    }
+                }
+                OP_LESS_CONST_JUMP_IF_FALSE => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let limit = Bytecode::read_i64(code, ip);
+                    ip += 8;
+                    let target = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+
+                    debug_assert!(idx < globals_len);
+                    let global = unsafe { self.global_unchecked(idx) };
+                    if let Value::Number(n) = *global {
+                        if n >= limit {
+                            ip = target;
+                        }
+                    } else {
+                        return Err("LessConstJumpIfFalse expects number".to_string());
+                    }
+                }
+                OP_ADD_GLOBAL => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let rhs = Bytecode::read_i64(code, ip);
+                    ip += 8;
+
+                    debug_assert!(idx < globals_len);
+                    let global = unsafe { self.global_unchecked(idx) };
+                    if let Value::Number(n) = *global {
+                        unsafe { self.set_global_unchecked(idx, Value::Number(n + rhs)); }
+                    } else {
+                        return Err("AddGlobal expects number".to_string());
+                    }
+                }
+                OP_INC_GLOBAL => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+
+                    debug_assert!(idx < globals_len);
+                    let global = unsafe { self.global_unchecked(idx) };
+                    if let Value::Number(n) = *global {
+                        unsafe { self.set_global_unchecked(idx, Value::Number(n + 1)); }
+                    } else {
+                        return Err("IncGlobal expects number".to_string());
+                    }
+                }
+                OP_LOAD_GLOBAL => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    debug_assert!(idx < globals_len);
+                    self.stack.push(unsafe { self.global_unchecked(idx).clone() });
+                }
+                OP_STORE_GLOBAL => {
+                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let val = self.pop()?;
+                    debug_assert!(idx < globals_len);
+                    unsafe { self.set_global_unchecked(idx, val); }
+                }
+                OP_JUMP => {
+                    ip = Bytecode::read_u32(code, ip) as usize;
+                }
+                OP_JUMP_IF_FALSE => {
+                    let target = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let cond = self.pop()?;
+                    match cond {
+                        Value::Boolean(b) => {
+                            if !b {
+                                ip = target;
+                            }
+                        }
+                        _ => return Err("JumpIfFalse expects boolean".to_string()),
+                    }
+                }
+                OP_CONSTANT => {
+                    let const_idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    self.stack.push(constants[const_idx].clone());
+                }
+                OP_NULL => {
+                    self.stack.push(Value::Null);
+                }
+                OP_ADD => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Number(l + r));
+                        }
+                        (Value::String(l), Value::String(r)) => {
+                            let concat: Arc<str> = Arc::from(format!("{}{}", l, r));
+                            self.stack.push(Value::String(concat));
+                        }
+                        (l, r) => return Err(format!(
+                            "Add requires two numbers or two strings, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_SUBTRACT => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Number(l - r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Subtract requires two numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_MULTIPLY => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Number(l * r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Multiply requires two numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_DIVIDE => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            if r == 0 { return Err("Division by zero".to_string()); }
+                            self.stack.push(Value::Number(l / r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Divide requires two numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_EQUALS => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    self.stack.push(Value::Boolean(left == right));
+                }
+                OP_NOT_EQUALS => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    self.stack.push(Value::Boolean(left != right));
+                }
+                OP_GREATER => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Boolean(l > r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Greater requires numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_LESS => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Boolean(l < r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Less requires numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_GREATER_EQUAL => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Boolean(l >= r));
+                        }
+                        (l, r) => return Err(format!(
+                            "GreaterEqual requires numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_LESS_EQUAL => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Number(l), Value::Number(r)) => {
+                            self.stack.push(Value::Boolean(l <= r));
+                        }
+                        (l, r) => return Err(format!(
+                            "LessEqual requires numbers, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_AND => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Boolean(l), Value::Boolean(r)) => {
+                            self.stack.push(Value::Boolean(l && r));
+                        }
+                        (l, r) => return Err(format!(
+                            "And requires booleans, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_OR => {
+                    let right = self.pop()?;
+                    let left = self.pop()?;
+                    match (left, right) {
+                        (Value::Boolean(l), Value::Boolean(r)) => {
+                            self.stack.push(Value::Boolean(l || r));
+                        }
+                        (l, r) => return Err(format!(
+                            "Or requires booleans, found {:?} and {:?}", l, r)),
+                    }
+                }
+                OP_NOT => {
+                    let operand = self.pop()?;
+                    match operand {
+                        Value::Boolean(b) => self.stack.push(Value::Boolean(!b)),
+                        other => return Err(format!("Not requires boolean, found {:?}", other)),
+                    }
+                }
+                OP_PRINT => {
+                    let val = self.pop()?;
+                    println!("{}", val);
+                }
+                OP_POP => {
+                    self.pop()?;
+                }
+                _ => return Err(format!("Unknown opcode: {}", opcode)),
             }
-            (l, r) => Err(format!("Add operation requires two numbers or two strings, found {:?} and {:?}", l, r)),
         }
-    }
 
-    #[inline(always)]
-    fn numeric_op<F>(&self, left: Value, right: Value, op: F) -> Result<Value, String>
-    where
-        F: FnOnce(i64, i64) -> Result<i64, String>,
-    {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => op(l, r).map(Value::Number),
-            (l, r) => Err(format!("Numeric operation requires two numbers, found {:?} and {:?}", l, r)),
-        }
-    }
-
-    #[inline(always)]
-    fn compare_numeric<F>(&self, left: Value, right: Value, comparator: F) -> Result<bool, String>
-    where
-        F: FnOnce(i64, i64) -> bool,
-    {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => Ok(comparator(l, r)),
-            (l, r) => Err(format!("Comparison requires numbers, found {:?} and {:?}", l, r)),
-        }
+        Ok(())
     }
 }

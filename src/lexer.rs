@@ -1,3 +1,6 @@
+use std::iter::Peekable;
+use std::str::Chars;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Keywords
@@ -43,37 +46,35 @@ pub enum Token {
     Eof,
 }
 
-pub struct Lexer {
-    input: Vec<char>,
-    position: usize,
+pub struct Lexer<'a> {
+    input: Peekable<Chars<'a>>,
+    current: Option<char>,
+    peeked: Option<char>,
 }
 
-impl Lexer {
-    pub fn new(input: &str) -> Self {
+impl<'a> Lexer<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut chars = input.chars().peekable();
+        let current = chars.next();
+        let peeked = chars.peek().copied();
         Lexer {
-            input: input.chars().collect(),
-            position: 0,
+            input: chars,
+            current,
+            peeked,
         }
     }
     
     fn current_char(&self) -> Option<char> {
-        if self.position < self.input.len() {
-            Some(self.input[self.position])
-        } else {
-            None
-        }
+        self.current
     }
     
     fn peek_char(&self) -> Option<char> {
-        if self.position + 1 < self.input.len() {
-            Some(self.input[self.position + 1])
-        } else {
-            None
-        }
+        self.peeked
     }
     
     fn advance(&mut self) {
-        self.position += 1;
+        self.current = self.input.next();
+        self.peeked = self.input.peek().copied();
     }
     
     fn skip_spaces(&mut self) {
@@ -150,120 +151,122 @@ impl Lexer {
     }
     
     pub fn next_token(&mut self) -> Token {
-        self.skip_spaces();
-        
-        match self.current_char() {
-            None => Token::Eof,
-            Some(ch) => {
-                match ch {
-                    '+' => {
-                        self.advance();
-                        Token::Plus
-                    }
-                    '-' => {
-                        self.advance();
-                        Token::Minus
-                    }
-                    '*' => {
-                        self.advance();
-                        Token::Star
-                    }
-                    '/' => {
-                        if self.peek_char() == Some('/') {
+        loop {
+            self.skip_spaces();
+
+            match self.current_char() {
+                None => return Token::Eof,
+                Some(ch) => {
+                    match ch {
+                        '+' => {
                             self.advance();
+                            return Token::Plus;
+                        }
+                        '-' => {
                             self.advance();
-                            while let Some(ch) = self.current_char() {
-                                if ch == '\n' {
-                                    break;
-                                }
+                            return Token::Minus;
+                        }
+                        '*' => {
+                            self.advance();
+                            return Token::Star;
+                        }
+                        '/' => {
+                            if self.peek_char() == Some('/') {
                                 self.advance();
+                                self.advance();
+                                while let Some(ch) = self.current_char() {
+                                    if ch == '\n' {
+                                        break;
+                                    }
+                                    self.advance();
+                                }
+                                continue;
+                            } else {
+                                self.advance();
+                                return Token::Slash;
                             }
-                            self.next_token()
-                        } else {
-                            self.advance();
-                            Token::Slash
                         }
-                    }
-                    '(' => {
-                        self.advance();
-                        Token::LParen
-                    }
-                    ')' => {
-                        self.advance();
-                        Token::RParen
-                    }
-                    '=' => {
-                        if self.peek_char() == Some('=') {
+                        '(' => {
                             self.advance();
-                            self.advance();
-                            Token::EqualEqual
-                        } else {
-                            self.advance();
-                            Token::Equal
+                            return Token::LParen;
                         }
-                    }
-                    '!' => {
-                        self.advance();
-                        if self.current_char() == Some('=') {
+                        ')' => {
                             self.advance();
-                            Token::NotEqual
-                        } else {
-                            Token::Not
+                            return Token::RParen;
                         }
-                    }
-                    '>' => {
-                        self.advance();
-                        if self.current_char() == Some('=') {
+                        '=' => {
+                            if self.peek_char() == Some('=') {
+                                self.advance();
+                                self.advance();
+                                return Token::EqualEqual;
+                            } else {
+                                self.advance();
+                                return Token::Equal;
+                            }
+                        }
+                        '!' => {
                             self.advance();
-                            Token::GreaterEqual
-                        } else {
-                            Token::Greater
+                            if self.current_char() == Some('=') {
+                                self.advance();
+                                return Token::NotEqual;
+                            } else {
+                                return Token::Not;
+                            }
                         }
-                    }
-                    '<' => {
-                        self.advance();
-                        if self.current_char() == Some('=') {
+                        '>' => {
                             self.advance();
-                            Token::LessEqual
-                        } else {
-                            Token::Less
+                            if self.current_char() == Some('=') {
+                                self.advance();
+                                return Token::GreaterEqual;
+                            } else {
+                                return Token::Greater;
+                            }
                         }
-                    }
-                    '{' => {
-                        self.advance();
-                        Token::LBrace
-                    }
-                    '}' => {
-                        self.advance();
-                        Token::RBrace
-                    }
-                    '\n' => {
-                        self.advance();
-                        Token::Newline
-                    }
-                    '"' => Token::String(self.read_string()),
-                    _ if ch.is_ascii_digit() => Token::Number(self.read_number()),
-                    _ if ch.is_alphabetic() || ch == '_' => {
-                        let ident = self.read_identifier();
-                        match ident.as_str() {
-                            "set" => Token::Set,
-                            "if" => Token::If,
-                            "else" => Token::Else,
-                            "elseif" => Token::ElseIf,
-                            "while" => Token::While,
-                            "true" => Token::True,
-                            "false" => Token::False,
-                            "null" => Token::Null,
-                            "print" => Token::Print,
-                            "and" => Token::And,
-                            "or" => Token::Or,
-                            "not" => Token::Not,
-                            _ => Token::Identifier(ident),
+                        '<' => {
+                            self.advance();
+                            if self.current_char() == Some('=') {
+                                self.advance();
+                                return Token::LessEqual;
+                            } else {
+                                return Token::Less;
+                            }
                         }
-                    }
-                    _ => {
-                        self.advance();
-                        self.next_token()
+                        '{' => {
+                            self.advance();
+                            return Token::LBrace;
+                        }
+                        '}' => {
+                            self.advance();
+                            return Token::RBrace;
+                        }
+                        '\n' => {
+                            self.advance();
+                            return Token::Newline;
+                        }
+                        '"' => return Token::String(self.read_string()),
+                        _ if ch.is_ascii_digit() => return Token::Number(self.read_number()),
+                        _ if ch.is_alphabetic() || ch == '_' => {
+                            let ident = self.read_identifier();
+                            return match ident.as_str() {
+                                "set" => Token::Set,
+                                "if" => Token::If,
+                                "else" => Token::Else,
+                                "elseif" => Token::ElseIf,
+                                "while" => Token::While,
+                                "true" => Token::True,
+                                "false" => Token::False,
+                                "null" => Token::Null,
+                                "print" => Token::Print,
+                                "and" => Token::And,
+                                "or" => Token::Or,
+                                "not" => Token::Not,
+                                _ => Token::Identifier(ident),
+                            };
+                        }
+                        _ => {
+                            self.advance();
+                            continue;
+                        }
                     }
                 }
             }

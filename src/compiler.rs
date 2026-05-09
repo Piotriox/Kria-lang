@@ -1,16 +1,18 @@
 use std::collections::HashMap;
-use crate::ast::{Expression, Statement};
-use crate::bytecode::{Instruction, Bytecode};
+use crate::ast::{Expression, Statement, Literal, BinaryOperator, UnaryOperator};
+use crate::bytecode::*;
+use crate::vm::Value;
+use std::sync::Arc;
 
 pub struct Compiler {
-    instructions: Bytecode,
+    bytecode: Bytecode,
     globals: HashMap<String, usize>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
         Compiler {
-            instructions: Vec::new(),
+            bytecode: Bytecode::new(),
             globals: HashMap::new(),
         }
     }
@@ -19,87 +21,63 @@ impl Compiler {
         for statement in statements {
             self.compile_statement(statement)?;
         }
-        // Apply constant folding optimization
-        self.instructions = Self::fold_constants(self.instructions);
-        Ok(self.instructions)
+        self.bytecode.num_globals = self.globals.len();
+        Ok(self.bytecode)
     }
 
-    /// Fold constant expressions at compile time
-    fn fold_constants(mut instructions: Bytecode) -> Bytecode {
-        let mut i = 0;
-        while i < instructions.len().saturating_sub(2) {
-            // Pattern: Constant(a), Constant(b), BinaryOp
-            if let (
-                Instruction::Constant(crate::ast::Literal::Number(a)),
-                Instruction::Constant(crate::ast::Literal::Number(b)),
-                binary_op,
-            ) = (&instructions[i], &instructions[i + 1], &instructions[i + 2])
-            {
-                let folded = match binary_op {
-                    Instruction::Add => Some(a + b),
-                    Instruction::Subtract => Some(a - b),
-                    Instruction::Multiply => Some(a * b),
-                    Instruction::Divide if *b != 0 => Some(a / b),
-                    _ => None,
-                };
-
-                if let Some(result) = folded {
-                    instructions[i] = Instruction::Constant(crate::ast::Literal::Number(result));
-                    instructions.remove(i + 1);
-                    instructions.remove(i + 1);
-                    continue;
-                }
-            }
-
-            i += 1;
-        }
-        instructions
+    fn emit_opcode(&mut self, op: u8) -> usize {
+        self.bytecode.emit_byte(op)
     }
 
-    fn emit(&mut self, instruction: Instruction) -> usize {
-        let index = self.instructions.len();
-        self.instructions.push(instruction);
-        index
+    fn emit_u32(&mut self, value: u32) -> usize {
+        self.bytecode.emit_u32(value)
     }
 
-    fn patch_jump(&mut self, index: usize, target: usize) {
-        let previous = std::mem::replace(&mut self.instructions[index], Instruction::Jump(target));
-        self.instructions[index] = match previous {
-            Instruction::Jump(_) => Instruction::Jump(target),
-            Instruction::JumpIfFalse(_) => Instruction::JumpIfFalse(target),
-            other => panic!("Attempted to patch a non-jump instruction: {:?}", other),
-        };
+    fn emit_i64(&mut self, value: i64) -> usize {
+        self.bytecode.emit_i64(value)
+    }
+
+    fn patch_u32(&mut self, pos: usize, value: u32) {
+        self.bytecode.patch_u32(pos, value);
+    }
+
+    fn emit_constant(&mut self, value: Value) {
+        let idx = self.bytecode.add_constant(value);
+        self.emit_opcode(OP_CONSTANT);
+        self.emit_u32(idx);
     }
 
     fn compile_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
             Statement::Assignment { name, value } => {
-                if let Some(instruction) = self.compile_special_assignment(name, value)? {
-                    self.emit(instruction);
-                } else {
-                    let index = self.resolve_global(name);
-                    self.compile_expression(value)?;
-                    self.emit(Instruction::StoreGlobal(index));
+                if self.compile_special_assignment(name, value)?.is_some() {
+                    return Ok(());
                 }
+                let index = self.resolve_global(name);
+                self.compile_expression(value)?;
+                self.emit_opcode(OP_STORE_GLOBAL);
+                self.emit_u32(index as u32);
             }
             Statement::Print(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Instruction::Print);
+                self.emit_opcode(OP_PRINT);
             }
             Statement::If { branches, else_branch } => {
-                let mut jump_to_end_locations = Vec::new();
+                let mut jump_to_end_positions = Vec::new();
 
-                for (index, (condition, branch)) in branches.iter().enumerate() {
+                for (i, (condition, branch)) in branches.iter().enumerate() {
                     self.compile_expression(condition)?;
-                    let jump_to_next = self.emit(Instruction::JumpIfFalse(0));
+                    self.emit_opcode(OP_JUMP_IF_FALSE);
+                    let jump_to_next_pos = self.emit_u32(0);
                     self.compile_block(branch)?;
-                    let jump_over_rest = self.emit(Instruction::Jump(0));
-                    jump_to_end_locations.push(jump_over_rest);
+                    self.emit_opcode(OP_JUMP);
+                    let jump_over_rest_pos = self.emit_u32(0);
+                    jump_to_end_positions.push(jump_over_rest_pos);
 
-                    let next_location = self.instructions.len();
-                    self.patch_jump(jump_to_next, next_location);
+                    let next_location = self.bytecode.code.len();
+                    self.patch_u32(jump_to_next_pos, next_location as u32);
 
-                    if index == branches.len() - 1 {
+                    if i == branches.len() - 1 {
                         break;
                     }
                 }
@@ -108,27 +86,98 @@ impl Compiler {
                     self.compile_block(else_branch)?;
                 }
 
-                let end_location = self.instructions.len();
-                for location in jump_to_end_locations {
-                    self.patch_jump(location, end_location);
+                let end_location = self.bytecode.code.len();
+                for pos in jump_to_end_positions {
+                    self.patch_u32(pos, end_location as u32);
                 }
             }
             Statement::While { condition, body } => {
-                let loop_start = self.instructions.len();
+                // Try to emit combined loop instruction
+                if let Some(_) = self.try_compile_combined_while(condition, body)? {
+                    return Ok(());
+                }
+
+                // Fallback: standard while loop
+                let loop_start = self.bytecode.code.len();
                 self.compile_expression(condition)?;
-                let exit_jump = self.emit(Instruction::JumpIfFalse(0));
+                self.emit_opcode(OP_JUMP_IF_FALSE);
+                let exit_jump_pos = self.emit_u32(0);
                 self.compile_block(body)?;
-                self.emit(Instruction::Jump(loop_start));
-                let loop_end = self.instructions.len();
-                self.patch_jump(exit_jump, loop_end);
+                self.emit_opcode(OP_JUMP);
+                self.emit_u32(loop_start as u32);
+                let loop_end = self.bytecode.code.len();
+                self.patch_u32(exit_jump_pos, loop_end as u32);
             }
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.emit(Instruction::Pop);
+                self.emit_opcode(OP_POP);
             }
         }
 
         Ok(())
+    }
+
+    fn try_compile_combined_while(
+        &mut self,
+        condition: &Expression,
+        body: &[Statement],
+    ) -> Result<Option<()>, String> {
+        // Pattern: while (var < const) { var = var + 1 } → OP_LOOP_INC_LESS
+        if let Expression::BinaryOp { left, op, right } = condition {
+            if *op == BinaryOperator::LessThan {
+                if let (Expression::Identifier(cond_var), Expression::Literal(Literal::Number(limit))) =
+                    (&**left, &**right)
+                {
+                    // Check if body is just: set var = var + 1
+                    if body.len() == 1 {
+                        if let Statement::Assignment { name, value } = &body[0] {
+                            if name == cond_var {
+                                if let Expression::BinaryOp {
+                                    left: body_left,
+                                    op: body_op,
+                                    right: body_right,
+                                } = value
+                                {
+                                    if *body_op == BinaryOperator::Add {
+                                        match (&**body_left, &**body_right) {
+                                            (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
+                                            | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
+                                                if src == cond_var =>
+                                            {
+                                                if *n == 1 {
+                                                    let idx = self.resolve_global(cond_var);
+                                                    self.emit_opcode(OP_LOOP_INC_LESS);
+                                                    self.emit_u32(idx as u32);
+                                                    self.emit_i64(*limit);
+                                                    return Ok(Some(()));
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Pattern: while (var < const) { set var = var + N } → OP_LESS_CONST_JUMP_IF_FALSE + OP_ADD_GLOBAL + OP_JUMP
+                    // Or any body: while (var < const) { ... } → OP_LESS_CONST_JUMP_IF_FALSE + body + OP_JUMP
+                    let idx = self.resolve_global(cond_var);
+                    let loop_start = self.bytecode.code.len();
+                    self.emit_opcode(OP_LESS_CONST_JUMP_IF_FALSE);
+                    self.emit_u32(idx as u32);
+                    self.emit_i64(*limit);
+                    let exit_pos = self.emit_u32(0); // placeholder for jump target
+                    self.compile_block(body)?;
+                    self.emit_opcode(OP_JUMP);
+                    self.emit_u32(loop_start as u32);
+                    let loop_end = self.bytecode.code.len();
+                    self.patch_u32(exit_pos, loop_end as u32);
+                    return Ok(Some(()));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn compile_block(&mut self, block: &[Statement]) -> Result<(), String> {
@@ -138,26 +187,33 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_special_assignment(&mut self, name: &String, value: &Expression) -> Result<Option<Instruction>, String> {
+    fn compile_special_assignment(&mut self, name: &str, value: &Expression) -> Result<Option<()>, String> {
         match value {
             Expression::BinaryOp { left, op, right } => {
                 match (&**left, &**right) {
-                    (Expression::Identifier(src), Expression::Literal(crate::ast::Literal::Number(n)))
-                    | (Expression::Literal(crate::ast::Literal::Number(n)), Expression::Identifier(src))
+                    (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
+                    | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
                         if src == name =>
                     {
                         let index = self.resolve_global(name);
                         return match op {
-                            crate::ast::BinaryOperator::Add => {
+                            BinaryOperator::Add => {
                                 if *n == 1 {
-                                    Ok(Some(Instruction::IncGlobal(index)))
+                                    self.emit_opcode(OP_INC_GLOBAL);
+                                    self.emit_u32(index as u32);
                                 } else {
-                                    Ok(Some(Instruction::AddGlobal(index, *n)))
+                                    self.emit_opcode(OP_ADD_GLOBAL);
+                                    self.emit_u32(index as u32);
+                                    self.emit_i64(*n);
                                 }
+                                Ok(Some(()))
                             }
-                            crate::ast::BinaryOperator::Subtract => {
+                            BinaryOperator::Subtract => {
                                 if let Expression::Identifier(_) = &**left {
-                                    Ok(Some(Instruction::AddGlobal(index, -*n)))
+                                    self.emit_opcode(OP_ADD_GLOBAL);
+                                    self.emit_u32(index as u32);
+                                    self.emit_i64(-*n);
+                                    Ok(Some(()))
                                 } else {
                                     Ok(None)
                                 }
@@ -175,35 +231,43 @@ impl Compiler {
     fn compile_expression(&mut self, expression: &Expression) -> Result<(), String> {
         match expression {
             Expression::Literal(literal) => {
-                self.emit(Instruction::Constant(literal.clone()));
+                let val = match literal {
+                    Literal::Number(n) => Value::Number(*n),
+                    Literal::String(s) => Value::String(Arc::from(s.as_str())),
+                    Literal::Boolean(b) => Value::Boolean(*b),
+                    Literal::Null => Value::Null,
+                };
+                self.emit_constant(val);
             }
             Expression::Identifier(name) => {
                 let index = self.resolve_global(name);
-                self.emit(Instruction::LoadGlobal(index));
+                self.emit_opcode(OP_LOAD_GLOBAL);
+                self.emit_u32(index as u32);
             }
             Expression::UnaryOp { op, expr } => {
                 self.compile_expression(expr)?;
                 match op {
-                    crate::ast::UnaryOperator::Not => self.emit(Instruction::Not),
+                    UnaryOperator::Not => self.emit_opcode(OP_NOT),
                 };
             }
             Expression::BinaryOp { left, op, right } => {
                 self.compile_expression(left)?;
                 self.compile_expression(right)?;
-                self.emit(match op {
-                    crate::ast::BinaryOperator::Add => Instruction::Add,
-                    crate::ast::BinaryOperator::Subtract => Instruction::Subtract,
-                    crate::ast::BinaryOperator::Multiply => Instruction::Multiply,
-                    crate::ast::BinaryOperator::Divide => Instruction::Divide,
-                    crate::ast::BinaryOperator::Equals => Instruction::Equals,
-                    crate::ast::BinaryOperator::NotEquals => Instruction::NotEquals,
-                    crate::ast::BinaryOperator::GreaterThan => Instruction::GreaterThan,
-                    crate::ast::BinaryOperator::LessThan => Instruction::LessThan,
-                    crate::ast::BinaryOperator::GreaterOrEqual => Instruction::GreaterOrEqual,
-                    crate::ast::BinaryOperator::LessOrEqual => Instruction::LessOrEqual,
-                    crate::ast::BinaryOperator::And => Instruction::And,
-                    crate::ast::BinaryOperator::Or => Instruction::Or,
-                });
+                let opcode = match op {
+                    BinaryOperator::Add => OP_ADD,
+                    BinaryOperator::Subtract => OP_SUBTRACT,
+                    BinaryOperator::Multiply => OP_MULTIPLY,
+                    BinaryOperator::Divide => OP_DIVIDE,
+                    BinaryOperator::Equals => OP_EQUALS,
+                    BinaryOperator::NotEquals => OP_NOT_EQUALS,
+                    BinaryOperator::GreaterThan => OP_GREATER,
+                    BinaryOperator::LessThan => OP_LESS,
+                    BinaryOperator::GreaterOrEqual => OP_GREATER_EQUAL,
+                    BinaryOperator::LessOrEqual => OP_LESS_EQUAL,
+                    BinaryOperator::And => OP_AND,
+                    BinaryOperator::Or => OP_OR,
+                };
+                self.emit_opcode(opcode);
             }
             Expression::FunctionCall { name, .. } => {
                 return Err(format!("Function calls are not supported in bytecode yet: {}", name));

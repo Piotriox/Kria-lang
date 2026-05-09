@@ -1,11 +1,11 @@
 # Kria Programming Language
 
-A custom programming language written in Rust.
+A custom programming language written in Rust, featuring a flat bytecode VM with combined loop instructions for high-performance execution.
 
 ## Features
 
 - File extension: `.krx`
-- Bytecode VM-based execution
+- Flat bytecode VM with constant pool and combined instructions
 - Dynamic + strong typing
 - Variable assignment with `set`
 - Arithmetic operations (+, -, *, /)
@@ -21,25 +21,44 @@ A custom programming language written in Rust.
 
 ## Architecture
 
-Kria now compiles source into bytecode before execution using a simple stack-based VM.
-The runtime pipeline is:
+Kria compiles source into flat bytecode (u8 opcodes + constant pool) before execution on a stack-based VM. The compiler emits combined instructions for hot paths like `while (var < N) { var = var + 1 }`, reducing dispatch from 6 to 1 per iteration.
 
 ```text
-Source → Lexer → Parser → Compiler → Bytecode VM
+Source → Lexer → Parser → Compiler → Flat Bytecode VM
 ```
+
+### Performance
+
+| Test | Avg Execution Time |
+|------|-------------------|
+| `perf_test.krx` (1M loop) | ~12ms |
+| `test.krx` (general features) | ~5ms |
+
+*Measured with `cargo build --release` on warm cache.*
 
 ## Building
 
 Ensure you have Rust installed. Then:
 
 ```bash
+# Debug build (for development)
 cargo build
+
+# Release build (for performance — recommended)
+cargo build --release
 ```
 
 ## Running
 
 ```bash
+# Development
 cargo run -- test.krx
+
+# Release (recommended for benchmarking)
+cargo run --release -- test.krx
+
+# Or run the binary directly after release build
+./target/release/kria test.krx
 ```
 
 Example `test.krx`:

@@ -16,8 +16,6 @@ RequestExecutionLevel user
 
 ; Modern UI
 !include "MUI2.nsh"
-!define MUI_ICON "kria.ico"
-!define MUI_UNICON "kria.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "LICENSE"

@@ -3,6 +3,13 @@
 # Kria Language Benchmark Suite
 # Measures execution time of various benchmark tests
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Change to project root
+cd "$PROJECT_ROOT"
+
 KRIA_BINARY="./target/release/kria"
 BENCH_DIR="./benchmarks"
 RESULTS_FILE="benchmark_results.txt"
@@ -51,49 +58,52 @@ for bench_file in "$BENCH_DIR"/*.krx; do
         echo -n "Running ${bench_name}... "
         
         # Measure execution time using /usr/bin/time
-        start_time=$(date +%s.%N)
+        start_time=$(date +%s%N)
         output=$("$KRIA_BINARY" "$bench_file" 2>&1)
         exit_code=$?
-        end_time=$(date +%s.%N)
+        end_time=$(date +%s%N)
         
-        elapsed=$(echo "$end_time - $start_time" | bc)
-        times[$bench_name]=$elapsed
-        total_time=$(echo "$total_time + $elapsed" | bc)
+        # Calculate elapsed time in milliseconds
+        elapsed_ns=$((end_time - start_time))
+        elapsed_ms=$(echo "scale=2; $elapsed_ns / 1000000" | bc)
+        times[$bench_name]=$elapsed_ms
+        total_time=$(echo "$total_time + $elapsed_ms" | bc)
         
         if [ $exit_code -eq 0 ]; then
-            echo -e "${GREEN}✓${NC} ${elapsed}s (output: $output)"
-            echo "$bench_name: ${elapsed}s - Output: $output" >> "$RESULTS_FILE"
+            echo -e "${GREEN}✓${NC} ${elapsed_ms}ms (output: $output)"
+            echo "$bench_name: ${elapsed_ms}ms - Output: $output" >> "$RESULTS_FILE"
         else
-            echo -e "${RED}✗${NC} ${elapsed}s (error)"
-            echo "$bench_name: ${elapsed}s - ERROR" >> "$RESULTS_FILE"
+            echo -e "${RED}✗${NC} ${elapsed_ms}ms (error)"
+            echo "$bench_name: ${elapsed_ms}ms - ERROR" >> "$RESULTS_FILE"
         fi
     fi
 done
 
 echo ""
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}           Benchmark Results${NC}"
-echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo -e "${BLUE}         Kria Benchmark Results${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo ""
 
 # Print results table
-printf "%-30s %15s\n" "Test Name" "Time (seconds)"
-printf "%-30s %15s\n" "---" "---"
+printf "%-35s %12s\n" "Test Name" "Time (ms)"
+printf "%-35s %12s\n" "─────────────────────────────────" "──────────"
 
 for bench_name in "${!times[@]}"; do
-    printf "%-30s %15s\n" "$bench_name" "${times[$bench_name]}"
+    printf "%-35s %12s\n" "$bench_name" "${times[$bench_name]} ms"
 done | sort
 
 echo ""
-printf "%-30s %15s\n" "TOTAL" "${total_time}s"
-printf "%-30s %15s\n" "Tests Run" "$bench_count"
+printf "%-35s %12s\n" "─────────────────────────────────" "──────────"
+printf "%-35s %12s\n" "Total Execution Time" "${total_time} ms"
+printf "%-35s %12s\n" "Number of Tests" "$bench_count"
 
 if [ $bench_count -gt 0 ]; then
-    average=$(echo "scale=6; $total_time / $bench_count" | bc)
-    printf "%-30s %15s\n" "Average" "${average}s"
+    average=$(echo "scale=2; $total_time / $bench_count" | bc)
+    printf "%-35s %12s\n" "Average Time per Test" "${average} ms"
 fi
 
 echo ""
-echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo ""
-echo -e "${GREEN}Results saved to: $RESULTS_FILE${NC}"
+echo -e "${GREEN}✓ Results saved to: $RESULTS_FILE${NC}"

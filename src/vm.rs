@@ -7,6 +7,10 @@ pub enum Value {
     String(Arc<str>),
     Boolean(bool),
     Null,
+    Function {
+        bytecode_offset: usize,
+        num_params: u32,
+    },
 }
 
 impl std::fmt::Display for Value {
@@ -16,13 +20,24 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
+            Value::Function { bytecode_offset, num_params } => {
+                write!(f, "<function at {:x}({} params)>", bytecode_offset, num_params)
+            }
         }
     }
+}
+
+pub struct CallFrame {
+    return_addr: usize,
+    locals_start: usize,  // Index where local variables start in stack
+    num_locals: u32,
 }
 
 pub struct VM {
     stack: Vec<Value>,
     globals: Vec<Value>,
+    call_stack: Vec<CallFrame>,
+    bytecode: Vec<u8>,  // Keep reference to bytecode for function calls
 }
 
 impl VM {
@@ -30,6 +45,8 @@ impl VM {
         VM {
             stack: Vec::with_capacity(256),
             globals: Vec::new(),
+            call_stack: Vec::new(),
+            bytecode: Vec::new(),
         }
     }
 
@@ -51,11 +68,14 @@ impl VM {
     pub fn execute(&mut self, bytecode: &Bytecode) -> Result<(), String> {
         let code = &bytecode.code;
         let constants = &bytecode.constants;
+        let code_len = code.len();
+
+        // Keep a copy of bytecode for function calls
+        self.bytecode = code.clone();
 
         self.globals.resize(bytecode.num_globals, Value::Null);
         let globals_len = self.globals.len();
 
-        let code_len = code.len();
         let mut ip: usize = 0;
 
         while ip < code_len {
@@ -63,6 +83,105 @@ impl VM {
             ip += 1;
 
             match opcode {
+                OP_RETURN => {
+                    if let Some(frame) = self.call_stack.pop() {
+                        // Pop return value from stack
+                        let return_value = self.pop()?;
+                        // Restore previous frame
+                        ip = frame.return_addr;
+                        // Push return value back onto stack
+                        self.stack.push(return_value);
+                    } else {
+                        // Top-level return, just exit
+                        break;
+                    }
+                }
+                OP_LOAD_LOCAL => {
+                    let offset = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    
+                    if let Some(frame) = self.call_stack.last() {
+                        let idx = frame.locals_start + offset;
+                        if idx < self.stack.len() {
+                            self.stack.push(self.stack[idx].clone());
+                        } else {
+                            return Err("Local variable out of bounds".to_string());
+                        }
+                    } else {
+                        return Err("Load local outside function context".to_string());
+                    }
+                }
+                OP_STORE_LOCAL => {
+                    let offset = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let val = self.pop()?;
+                    
+                    if let Some(frame) = self.call_stack.last() {
+                        let idx = frame.locals_start + offset;
+                        if idx < self.stack.len() {
+                            self.stack[idx] = val;
+                        } else {
+                            return Err("Local variable out of bounds".to_string());
+                        }
+                    } else {
+                        return Err("Store local outside function context".to_string());
+                    }
+                }
+                OP_DEFINE_FUNCTION => {
+                    let global_idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let func_offset = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let num_params = Bytecode::read_u32(code, ip);
+                    ip += 4;
+                    
+                    let func = Value::Function {
+                        bytecode_offset: func_offset,
+                        num_params,
+                    };
+                    debug_assert!(global_idx < globals_len);
+                    unsafe { self.set_global_unchecked(global_idx, func); }
+                }
+                OP_FUNCTION_VALUE => {
+                    let func_offset = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let num_params = Bytecode::read_u32(code, ip);
+                    ip += 4;
+                    
+                    let func = Value::Function {
+                        bytecode_offset: func_offset,
+                        num_params,
+                    };
+                    self.stack.push(func);
+                }
+                OP_CALL_FUNCTION => {
+                    let num_args = Bytecode::read_u32(code, ip) as u32;
+                    ip += 4;
+                    
+                    let func = self.pop()?;
+                    
+                    match func {
+                        Value::Function { bytecode_offset, num_params } => {
+                            if num_params != num_args {
+                                return Err(format!(
+                                    "Function expects {} arguments, got {}",
+                                    num_params, num_args
+                                ));
+                            }
+                            
+                            let locals_start = self.stack.len() - num_args as usize;
+                            let frame = CallFrame {
+                                return_addr: ip,
+                                locals_start,
+                                num_locals: num_params,
+                            };
+                            
+                            self.call_stack.push(frame);
+                            ip = bytecode_offset;
+                        }
+                        _ => return Err("Attempted to call non-function value".to_string()),
+                    }
+                }
                 OP_LOOP_INC_LESS => {
                     let idx = Bytecode::read_u32(code, ip) as usize;
                     ip += 4;

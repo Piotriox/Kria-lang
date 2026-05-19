@@ -7,6 +7,10 @@ use std::sync::Arc;
 pub struct Compiler {
     bytecode: Bytecode,
     globals: HashMap<String, usize>,
+    local_scope: Vec<HashMap<String, usize>>,  // Stack of local scopes
+    function_definitions: HashMap<String, (usize, u32)>, // function_name -> (bytecode_offset, num_params)
+    return_stack: Vec<usize>,  // Stack of jump positions for return statements
+    in_function: bool,
 }
 
 impl Compiler {
@@ -14,6 +18,10 @@ impl Compiler {
         Compiler {
             bytecode: Bytecode::new(),
             globals: HashMap::new(),
+            local_scope: Vec::new(),
+            function_definitions: HashMap::new(),
+            return_stack: Vec::new(),
+            in_function: false,
         }
     }
 
@@ -53,9 +61,13 @@ impl Compiler {
                 if self.compile_special_assignment(name, value)?.is_some() {
                     return Ok(());
                 }
-                let index = self.resolve_global(name);
+                let (is_local, index) = self.resolve_identifier(name)?;
                 self.compile_expression(value)?;
-                self.emit_opcode(OP_STORE_GLOBAL);
+                if is_local {
+                    self.emit_opcode(OP_STORE_LOCAL);
+                } else {
+                    self.emit_opcode(OP_STORE_GLOBAL);
+                }
                 self.emit_u32(index as u32);
             }
             Statement::Print(expr) => {
@@ -107,6 +119,57 @@ impl Compiler {
                 self.emit_u32(loop_start as u32);
                 let loop_end = self.bytecode.code.len();
                 self.patch_u32(exit_jump_pos, loop_end as u32);
+            }
+            Statement::FunctionDef { name, params, body } => {
+                // Emit JUMP to skip function body
+                self.emit_opcode(OP_JUMP);
+                let skip_pos = self.emit_u32(0);  // placeholder for jump target
+                
+                // Record function offset (after the jump instruction)
+                let func_offset = self.bytecode.code.len();
+
+                // Compile function body
+                self.local_scope.push(HashMap::new());
+                self.in_function = true;
+
+                for (i, param) in params.iter().enumerate() {
+                    self.local_scope.last_mut().unwrap().insert(
+                        param.clone(),
+                        i,
+                    );
+                }
+
+                self.compile_block(body)?;
+
+                // Ensure function returns something
+                if !matches!(body.last(), Some(Statement::Return(_))) {
+                    self.emit_opcode(OP_NULL);
+                    self.emit_opcode(OP_RETURN);
+                }
+
+                self.local_scope.pop();
+                self.in_function = false;
+
+                // Patch jump to skip over function body
+                let after_func = self.bytecode.code.len();
+                self.patch_u32(skip_pos, after_func as u32);
+                
+                // Now create and store function value in global
+                let global_idx = self.resolve_global(name);
+                self.emit_opcode(OP_FUNCTION_VALUE);
+                self.emit_u32(func_offset as u32);
+                self.emit_u32(params.len() as u32);
+                self.emit_opcode(OP_STORE_GLOBAL);
+                self.emit_u32(global_idx as u32);
+            }
+            Statement::Return(expr) => {
+                match expr {
+                    Some(e) => self.compile_expression(e)?,
+                    None => {
+                        self.emit_opcode(OP_NULL);
+                    }
+                }
+                self.emit_opcode(OP_RETURN);
             }
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
@@ -240,8 +303,12 @@ impl Compiler {
                 self.emit_constant(val);
             }
             Expression::Identifier(name) => {
-                let index = self.resolve_global(name);
-                self.emit_opcode(OP_LOAD_GLOBAL);
+                let (is_local, index) = self.resolve_identifier(name)?;
+                if is_local {
+                    self.emit_opcode(OP_LOAD_LOCAL);
+                } else {
+                    self.emit_opcode(OP_LOAD_GLOBAL);
+                }
                 self.emit_u32(index as u32);
             }
             Expression::UnaryOp { op, expr } => {
@@ -269,8 +336,62 @@ impl Compiler {
                 };
                 self.emit_opcode(opcode);
             }
-            Expression::FunctionCall { name, .. } => {
-                return Err(format!("Function calls are not supported in bytecode yet: {}", name));
+            Expression::FunctionCall { name, args } => {
+                // Compile arguments onto stack
+                for arg in args {
+                    self.compile_expression(arg)?;
+                }
+                
+                // Load function
+                let (is_local, idx) = self.resolve_identifier(name)?;
+                if is_local {
+                    self.emit_opcode(OP_LOAD_LOCAL);
+                } else {
+                    self.emit_opcode(OP_LOAD_GLOBAL);
+                }
+                self.emit_u32(idx as u32);
+                
+                // Call function
+                self.emit_opcode(OP_CALL_FUNCTION);
+                self.emit_u32(args.len() as u32);
+            }
+            Expression::FunctionExpr { params, body } => {
+                // Emit JUMP to skip function body
+                self.emit_opcode(OP_JUMP);
+                let skip_pos = self.emit_u32(0);  // placeholder
+                
+                let func_offset = self.bytecode.code.len();
+                
+                // Compile function body
+                self.local_scope.push(HashMap::new());
+                self.in_function = true;
+                
+                for (i, param) in params.iter().enumerate() {
+                    self.local_scope.last_mut().unwrap().insert(
+                        param.clone(),
+                        i,
+                    );
+                }
+                
+                self.compile_block(body)?;
+                
+                // Ensure function returns something
+                if !matches!(body.last(), Some(Statement::Return(_))) {
+                    self.emit_opcode(OP_NULL);
+                    self.emit_opcode(OP_RETURN);
+                }
+                
+                self.local_scope.pop();
+                self.in_function = false;
+                
+                // Patch jump to skip function body
+                let after_func = self.bytecode.code.len();
+                self.patch_u32(skip_pos, after_func as u32);
+                
+                // Create function value
+                self.emit_opcode(OP_FUNCTION_VALUE);
+                self.emit_u32(func_offset as u32);
+                self.emit_u32(params.len() as u32);
             }
         }
         Ok(())
@@ -284,5 +405,18 @@ impl Compiler {
             self.globals.insert(name.to_string(), index);
             index
         }
+    }
+
+    fn resolve_identifier(&mut self, name: &str) -> Result<(bool, usize), String> {
+        // Check if identifier is in local scope
+        if let Some(locals) = self.local_scope.last() {
+            if let Some(&index) = locals.get(name) {
+                return Ok((true, index));  // (is_local, index)
+            }
+        }
+        
+        // Otherwise, resolve as global
+        let index = self.resolve_global(name);
+        Ok((false, index))  // (is_local, index)
     }
 }

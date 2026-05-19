@@ -26,6 +26,12 @@ pub const OP_ADD_GLOBAL: u8 = 21;
 pub const OP_LESS_CONST_JUMP_IF_FALSE: u8 = 22; // LoadGlobal + Constant + LessThan + JumpIfFalse
 pub const OP_LOOP_INC_LESS: u8 = 23;            // IncGlobal + Jump (full loop tick)
 pub const OP_NULL: u8 = 24;
+pub const OP_DEFINE_FUNCTION: u8 = 25;          // Define function: global_idx, bytecode_offset, num_params
+pub const OP_FUNCTION_VALUE: u8 = 26;           // Create function value: bytecode_offset, num_params
+pub const OP_CALL_FUNCTION: u8 = 27;            // Call function: num_args
+pub const OP_RETURN: u8 = 28;                    // Return from function
+pub const OP_LOAD_LOCAL: u8 = 29;               // Load local variable: frame_offset
+pub const OP_STORE_LOCAL: u8 = 30;              // Store local variable: frame_offset
 
 pub struct Bytecode {
     pub code: Vec<u8>,

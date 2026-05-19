@@ -15,6 +15,12 @@ pub enum Statement {
         condition: Expression,
         body: Vec<Statement>,
     },
+    FunctionDef {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Statement>,
+    },
+    Return(Option<Expression>),
     Expression(Expression),
 }
 
@@ -34,6 +40,10 @@ pub enum Expression {
     FunctionCall {
         name: String,
         args: Vec<Expression>,
+    },
+    FunctionExpr {
+        params: Vec<String>,
+        body: Vec<Statement>,
     },
 }
 

@@ -1,9 +1,9 @@
 
-fn add(x, y) {
+fn add2(x, y) {
     return x+y
 }
 
-add(5, 15)
+add2(5, 15)
 
 
 set add = fn(a, b) {

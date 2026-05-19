@@ -66,6 +66,14 @@ impl Parser {
             Token::Print => self.parse_print(),
             Token::If => self.parse_if_statement(),
             Token::While => self.parse_while_statement(),
+            Token::Fn => self.parse_function_def(),
+            Token::Return => self.parse_return(),
+            Token::Identifier(_) | Token::Number(_) | Token::String(_) | Token::True | Token::False | Token::Null | Token::LParen => {
+                // Try to parse as expression statement (e.g., function call)
+                let expr = self.parse_expression()?;
+                self.expect_statement_end()?;
+                Ok(Statement::Expression(expr))
+            }
             _ => Err(format!("Unexpected token: {:?}", self.current_token())),
         }
     }
@@ -173,6 +181,67 @@ impl Parser {
         self.expect_statement_end()?;
         
         Ok(Statement::Print(expr))
+    }
+
+    fn parse_function_def(&mut self) -> Result<Statement, String> {
+        self.expect(Token::Fn)?;
+        
+        let name = match self.current_token() {
+            Token::Identifier(n) => {
+                let n_clone = n.clone();
+                self.advance();
+                n_clone
+            }
+            _ => return Err("Expected function name after 'fn'".to_string()),
+        };
+        
+        self.expect(Token::LParen)?;
+        let params = self.parse_parameter_list()?;
+        self.expect(Token::RParen)?;
+        
+        while self.current_token() == &Token::Newline {
+            self.advance();
+        }
+        
+        let body = self.parse_block()?;
+        self.expect_statement_end()?;
+        
+        Ok(Statement::FunctionDef { name, params, body })
+    }
+
+    fn parse_return(&mut self) -> Result<Statement, String> {
+        self.expect(Token::Return)?;
+        
+        let expr = match self.current_token() {
+            Token::Newline | Token::RBrace | Token::Eof => None,
+            _ => Some(self.parse_expression()?),
+        };
+        
+        self.expect_statement_end()?;
+        Ok(Statement::Return(expr))
+    }
+
+    fn parse_parameter_list(&mut self) -> Result<Vec<String>, String> {
+        let mut params = Vec::new();
+        
+        while self.current_token() != &Token::RParen {
+            if let Token::Identifier(name) = self.current_token() {
+                params.push(name.clone());
+                self.advance();
+                
+                if self.current_token() == &Token::RParen {
+                    break;
+                }
+                // Allow comma-separated parameters (optional)
+                if matches!(self.current_token(), Token::Comma) {
+                    self.advance();
+                }
+            } else {
+                return Err("Expected parameter name".to_string());
+            }
+        }
+        
+        Ok(params)
     }
     
     fn parse_expression(&mut self) -> Result<Expression, String> {
@@ -357,7 +426,32 @@ impl Parser {
             Token::Identifier(name) => {
                 let name_val = name.clone();
                 self.advance();
-                Ok(Expression::Identifier(name_val))
+                
+                // Check for function call
+                if self.current_token() == &Token::LParen {
+                    self.advance();
+                    let args = self.parse_argument_list()?;
+                    self.expect(Token::RParen)?;
+                    Ok(Expression::FunctionCall {
+                        name: name_val,
+                        args,
+                    })
+                } else {
+                    Ok(Expression::Identifier(name_val))
+                }
+            }
+            Token::Fn => {
+                self.advance();
+                self.expect(Token::LParen)?;
+                let params = self.parse_parameter_list()?;
+                self.expect(Token::RParen)?;
+                
+                while self.current_token() == &Token::Newline {
+                    self.advance();
+                }
+                
+                let body = self.parse_block()?;
+                Ok(Expression::FunctionExpr { params, body })
             }
             Token::LParen => {
                 self.advance();
@@ -367,5 +461,23 @@ impl Parser {
             }
             _ => Err(format!("Unexpected token in expression: {:?}", self.current_token())),
         }
+    }
+
+    fn parse_argument_list(&mut self) -> Result<Vec<Expression>, String> {
+        let mut args = Vec::new();
+        
+        while self.current_token() != &Token::RParen {
+            args.push(self.parse_expression()?);
+            
+            if self.current_token() == &Token::RParen {
+                break;
+            }
+            
+            if matches!(self.current_token(), Token::Comma) {
+                self.advance();
+            }
+        }
+        
+        Ok(args)
     }
 }

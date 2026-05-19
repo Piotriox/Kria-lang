@@ -9,6 +9,8 @@ pub enum Token {
     Else,
     ElseIf,
     While,
+    Fn,
+    Return,
     True,
     False,
     Null,
@@ -40,6 +42,7 @@ pub enum Token {
     RParen,
     LBrace,
     RBrace,
+    Comma,
     Newline,
     
     // Special
@@ -239,6 +242,10 @@ impl<'a> Lexer<'a> {
                             self.advance();
                             return Token::RBrace;
                         }
+                        ',' => {
+                            self.advance();
+                            return Token::Comma;
+                        }
                         '\n' => {
                             self.advance();
                             return Token::Newline;
@@ -253,6 +260,8 @@ impl<'a> Lexer<'a> {
                                 "else" => Token::Else,
                                 "elseif" => Token::ElseIf,
                                 "while" => Token::While,
+                                "fn" => Token::Fn,
+                                "return" => Token::Return,
                                 "true" => Token::True,
                                 "false" => Token::False,
                                 "null" => Token::Null,

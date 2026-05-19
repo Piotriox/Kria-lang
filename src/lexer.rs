@@ -36,12 +36,15 @@ pub enum Token {
     And,
     Or,
     Not,
+    Pipe,
     
     // Delimiters
     LParen,
     RParen,
     LBrace,
     RBrace,
+    LAngle,
+    RAngle,
     Comma,
     Newline,
     
@@ -245,6 +248,10 @@ impl<'a> Lexer<'a> {
                         ',' => {
                             self.advance();
                             return Token::Comma;
+                        }
+                        '|' => {
+                            self.advance();
+                            return Token::Pipe;
                         }
                         '\n' => {
                             self.advance();

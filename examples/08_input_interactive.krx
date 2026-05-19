@@ -1,10 +1,8 @@
 print("=== İnteraktif Programlar ===")
 
 print("--- Basit Hesap Makinesi ---")
-print("İlk sayı:")
-set num1 = int()
-print("İkinci sayı:")
-set num2 = int()
+set num1 = input<int>("İlk sayı:")
+set num2 = input<int>("İkinci sayı:")
 
 set sum = num1 + num2
 set product = num1 * num2
@@ -21,8 +19,7 @@ print("Bölüm: ")
 print(div)
 
 print("--- Yaş Kategorilendirme ---")
-print("Yaşınız:")
-set age = int()
+set age = input<int>("Yaşınız:")
 
 if (age < 13) {
     print("Çocuk")
@@ -39,8 +36,7 @@ if (age < 13) {
 }
 
 print("--- Şifre Kontrolü ---")
-print("Şifreyi girin:")
-set password = input
+set password = input<str>("Şifreyi girin:")
 
 if (password == "kria123") {
     print("Doğru şifre!")
@@ -49,15 +45,13 @@ if (password == "kria123") {
 }
 
 print("--- Sayı Tahmin ---")
-print("Bir sayı düşün (1-10 arası):")
-set secret = int()
+set secret = input<int>("Bir sayı düşün (1-10 arası):")
 
 set guess = 0
 set attempts = 0
 
 while (guess != secret) {
-    print("Tahmininiz: ")
-    set guess = int()
+    set guess = input<int>("Tahmininiz: ")
     set attempts = attempts + 1
     
     if (guess == secret) {
@@ -74,8 +68,7 @@ while (guess != secret) {
 }
 
 print("--- Kare Hesaplama ---")
-print("Bir sayı girin:")
-set number = int()
+set number = input<int>("Bir sayı girin:")
 
 fn square(n) {
     return n * n
@@ -86,8 +79,7 @@ print("Karesi: ")
 print(squared)
 
 print("--- Pozitif/Negatif Kontrol ---")
-print("Bir sayı girin:")
-set value = int()
+set value = input<int>("Bir sayı girin:")
 
 if (value > 0) {
     print("Pozitif")
@@ -100,8 +92,7 @@ if (value > 0) {
 }
 
 print("--- Çarpım Tablosu ---")
-print("Hangi sayının tablosunu görmek istiyorsunuz?")
-set table_num = int()
+set table_num = input<int>("Hangi sayının tablosunu görmek istiyorsunuz?")
 
 set multiplier = 1
 print("--- Çarpım Tablosu ---")

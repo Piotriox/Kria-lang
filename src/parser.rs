@@ -427,8 +427,22 @@ impl Parser {
                 let name_val = name.clone();
                 self.advance();
                 
+                // Check for input<type>("prompt")
+                if name_val == "input" && self.current_token() == &Token::Less {
+                    self.advance(); // consume <
+                    let types = self.parse_input_types()?;
+                    self.expect(Token::Greater)?;
+                    self.expect(Token::LParen)?;
+                    let prompt = self.parse_expression()?;
+                    self.expect(Token::RParen)?;
+                    
+                    Ok(Expression::Input {
+                        types,
+                        prompt: Box::new(prompt),
+                    })
+                }
                 // Check for function call
-                if self.current_token() == &Token::LParen {
+                else if self.current_token() == &Token::LParen {
                     self.advance();
                     let args = self.parse_argument_list()?;
                     self.expect(Token::RParen)?;
@@ -479,5 +493,40 @@ impl Parser {
         }
         
         Ok(args)
+    }
+    
+    fn parse_input_types(&mut self) -> Result<Vec<crate::ast::InputType>, String> {
+        use crate::ast::InputType;
+        let mut types = Vec::new();
+        
+        loop {
+            match self.current_token() {
+                Token::Identifier(name) => {
+                    let type_name = name.clone();
+                    self.advance();
+                    
+                    let input_type = match type_name.as_str() {
+                        "str" => InputType::String,
+                        "int" => InputType::Int,
+                        "float" => InputType::Float,
+                        _ => return Err(format!("Unknown input type: {}", type_name)),
+                    };
+                    types.push(input_type);
+                    
+                    if self.current_token() == &Token::Pipe {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                _ => return Err("Expected input type (str, int, or float)".to_string()),
+            }
+        }
+        
+        if types.is_empty() {
+            return Err("At least one input type is required".to_string());
+        }
+        
+        Ok(types)
     }
 }

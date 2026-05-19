@@ -158,39 +158,36 @@ print(sum_to(5))  // Output: 10 (0+1+2+3+4)
 
 ## Input Operations
 
-Kria provides three ways to read input from stdin:
+Kria provides a unified input system with type specifications:
 
 ### Reading Strings
 ```kria
-set name = input
+set name = input<str>("What is your name?")
 print(name)
 ```
 
-Use `input` as a bare identifier to read a string from stdin.
+Use `input<str>("prompt")` to read a string from stdin with a prompt message.
 
 ### Reading Integers
 ```kria
-set age = int()
+set age = input<int>("How old are you?")
 print(age)
 ```
 
-Call `int()` to read an integer. Non-numeric input will cause an error.
+Use `input<int>("prompt")` to read an integer. Non-numeric input will cause an error and retry.
 
 ### Reading Floats
 ```kria
-set height = float()
+set height = input<float>("What is your height?")
 print(height)
 ```
 
-Call `float()` to read a floating-point number. The VM stores numbers as 64-bit integers, so floats are truncated.
+Use `input<float>("prompt")` to read a floating-point number. The VM stores numbers as 64-bit integers, so floats are truncated.
 
 ### Example: Interactive Program
 ```kria
-print("What is your name?")
-set name = input
-
-print("How old are you?")
-set age = int()
+set name = input<str>("What is your name?")
+set age = input<int>("How old are you?")
 
 print("Hello, ")
 print(name)

@@ -420,42 +420,71 @@ impl VM {
                 OP_POP => {
                     self.pop()?;
                 }
-                OP_INPUT_STRING => {
-                    let mut buffer = String::new();
-                    std::io::stdin().read_line(&mut buffer)
-                        .map_err(|e| format!("Input error: {}", e))?;
-                    // Remove trailing newline
-                    if buffer.ends_with('\n') {
-                        buffer.pop();
-                        if buffer.ends_with('\r') {
-                            buffer.pop();
-                        }
-                    }
-                    self.stack.push(Value::String(Arc::from(buffer)));
-                }
-                OP_INPUT_INT => {
-                    let mut buffer = String::new();
-                    std::io::stdin().read_line(&mut buffer)
-                        .map_err(|e| format!("Input error: {}", e))?;
-                    let trimmed = buffer.trim();
-                    let num = trimmed.parse::<i64>()
-                        .map_err(|_| format!("Invalid integer input: '{}'", trimmed))?;
-                    self.stack.push(Value::Number(num));
-                }
-                OP_INPUT_FLOAT => {
-                    let mut buffer = String::new();
-                    std::io::stdin().read_line(&mut buffer)
-                        .map_err(|e| format!("Input error: {}", e))?;
-                    let trimmed = buffer.trim();
-                    // Try parsing as float, fallback to int
-                    let num = if let Ok(f) = trimmed.parse::<f64>() {
-                        f as i64  // Store as i64 (no native float support)
-                    } else if let Ok(i) = trimmed.parse::<i64>() {
-                        i
-                    } else {
-                        return Err(format!("Invalid number input: '{}'", trimmed));
+                OP_INPUT => {
+                    // Read type mask
+                    let type_mask = code[ip];
+                    ip += 1;
+                    
+                    // Pop prompt from stack
+                    let prompt = self.pop()?;
+                    let prompt_str = match prompt {
+                        Value::String(s) => s.to_string(),
+                        _ => return Err("Input prompt must be a string".to_string()),
                     };
-                    self.stack.push(Value::Number(num));
+                    
+                    // Print prompt
+                    print!("{}", prompt_str);
+                    use std::io::{self, Write};
+                    let _ = io::stdout().flush();
+                    
+                    // Read input with retry loop
+                    let has_str = (type_mask & 0x01) != 0;
+                    let has_int = (type_mask & 0x02) != 0;
+                    let has_float = (type_mask & 0x04) != 0;
+                    
+                    let value = loop {
+                        let mut buffer = String::new();
+                        std::io::stdin().read_line(&mut buffer)
+                            .map_err(|e| format!("Input error: {}", e))?;
+                        let trimmed = buffer.trim().to_string();
+                        
+                        // Try to match input to allowed types
+                        let mut accepted = false;
+                        
+                        // Try integer first if permitted
+                        if has_int {
+                            if let Ok(num) = trimmed.parse::<i64>() {
+                                break Value::Number(num);
+                            }
+                        }
+                        
+                        // Try float if permitted (and not already parsed as int)
+                        if has_float && trimmed.parse::<i64>().is_err() {
+                            if let Ok(num) = trimmed.parse::<f64>() {
+                                break Value::Number(num as i64);
+                            }
+                        }
+                        
+                        // Try string if permitted and not numeric
+                        if has_str {
+                            if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
+                                // Pure string (non-numeric)
+                                break Value::String(Arc::from(trimmed));
+                            }
+                        }
+                        
+                        // Invalid input, print error and retry
+                        eprint!("Invalid input. Expected: ");
+                        let mut expected = Vec::new();
+                        if has_str { expected.push("string"); }
+                        if has_int { expected.push("integer"); }
+                        if has_float { expected.push("float"); }
+                        eprintln!("{}", expected.join(" or "));
+                        eprint!("Try again: ");
+                        let _ = io::stderr().flush();
+                    };
+                    
+                    self.stack.push(value);
                 }
                 _ => return Err(format!("Unknown opcode: {}", opcode)),
             }

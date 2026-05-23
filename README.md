@@ -12,9 +12,11 @@ A custom programming language written in Rust, featuring a flat bytecode VM with
 - Comparison operators: `==`, `!=`, `>`, `<`, `>=`, `<=`
 - Logical operators: `and`, `or`, `not`
 - Conditional branches: `if`, `else`
-- Loops: `while`
+- Loops: `while`, `for-in`
+- **Loop control**: `break`, `continue`
 - **Functions** (named and anonymous/lambda)
 - **Closures** — nested functions capture outer parameters and upvalues (copy-on-create)
+- **Arrays** — mutable `[...]` and immutable `#[...]`, indexing, `length`, `push`/`pop`, iterate with `for-in`
 - **Return statements** with values
 - **Function parameters** and local variable scoping
 - **Input operations**: read strings, integers, and floats from stdin
@@ -107,6 +109,53 @@ while (counter < 5) {
 // Line comments start with // and continue to the end of the line.
 ```
 
+## Loop Control: Break and Continue
+
+Kria supports `break` to exit a loop early and `continue` to skip to the next iteration:
+
+### Break
+```kria
+set i = 0
+while (i < 10) {
+    if (i == 5) {
+        break  // Exit loop immediately
+    }
+    print(i)
+    set i = i + 1
+}
+// Output: 0, 1, 2, 3, 4
+```
+
+### Continue
+```kria
+set i = 0
+while (i < 5) {
+    set i = i + 1
+    if (i == 3) {
+        continue  // Skip to next iteration
+    }
+    print(i)
+}
+// Output: 1, 2, 4, 5
+```
+
+### With For-In Loops
+```kria
+set arr = [1, 2, 3, 4, 5]
+for item in arr {
+    if (item == 2) {
+        continue
+    }
+    if (item == 4) {
+        break
+    }
+    print(item)
+}
+// Output: 1, 3
+```
+
+**Note:** In nested loops, `break` and `continue` affect only the innermost loop they appear in.
+
 ## Functions
 
 Kria supports both named functions and anonymous (lambda) functions:
@@ -181,6 +230,58 @@ Captured variables include:
 
 - Capture happens at creation time: if you `set x = 1`, then `set f = fn() { return x }`, then `set x = 2`, calling `f()` still returns `1`.
 - `set` inside a function body (other than parameters) still uses **global** storage; only parameters and captured names use closure locals/upvalues.
+
+## Arrays
+
+Kria has two array kinds:
+
+| Syntax | Mutable | `push` / `pop` | `arr[i] = v` |
+|--------|---------|----------------|--------------|
+| `[1, 2, 3]` | Yes | Yes | Yes (no `set`) |
+| `#[1, 2, 3]` | No | Runtime error | Runtime error |
+
+### Literals and indexing
+
+```kria
+set arr = [10, 20, 30]
+set frozen = #[1, 2]
+
+print(arr[0])       // 10
+set x = arr[1]      // read into variable
+
+arr[0] = 99         // element assign (mutable only)
+print(arr.length)   // 3
+```
+
+Nested arrays are supported: `[[1, 2], [3, 4]]`.
+
+### push and pop
+
+```kria
+push(arr, 40)       // append in place (mutable only)
+set last = pop(arr) // remove last element; empty array → error
+```
+
+### Equality
+
+Arrays compare with **deep equality**: `[1, 2] == [1, 2]` is `true`.
+
+### for-in loops
+
+```kria
+for item in arr {
+    print(item)
+}
+```
+
+### Member access (`.length`)
+
+Dot syntax is used for members (e.g. `arr.length`). The same mechanism is intended for future object fields.
+
+### Notes
+
+- Array capture in closures follows the same copy-on-create rules as other values.
+- `set` inside a function body still targets globals; only parameters use locals.
 
 ## Input Operations
 

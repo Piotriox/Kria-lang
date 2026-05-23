@@ -98,6 +98,18 @@ fn reverse_digits(n) {
 print("Reverse of 12345: ")
 print(reverse_digits(12345))
 
+print("=== Prime Search with Break ===")
+
+print("Find first prime number >= 20:")
+set num = 20
+while (num < 50) {
+    if (is_prime(num)) {
+        print(num)
+        break
+    }
+    set num = num + 1
+}
+
 fn is_palindrome(n) {
     set reversed = reverse_digits(n)
     return reversed == n

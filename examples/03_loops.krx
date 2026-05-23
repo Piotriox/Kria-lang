@@ -43,3 +43,50 @@ while (num <= 20) {
     set num = num + 2
 }
 print(even_sum)
+
+print("=== Break Statement ===")
+
+print("Find first number >= 50:")
+set num = 1
+while (num <= 100) {
+    if (num >= 50) {
+        print(num)
+        break
+    }
+    set num = num + 1
+}
+
+print("=== Continue Statement ===")
+
+print("Print odd numbers from 1 to 10:")
+set num = 0
+while (num < 10) {
+    set num = num + 1
+    set remainder = num - ((num / 2) * 2)
+    if (remainder == 0) {
+        continue
+    }
+    print(num)
+}
+
+print("=== For-In with Break ===")
+
+set numbers = [5, 10, 15, 20, 25, 30]
+print("Find first number > 18:")
+for num in numbers {
+    if (num > 18) {
+        print(num)
+        break
+    }
+}
+
+print("=== For-In with Continue ===")
+
+print("Print only odd numbers from array:")
+for num in numbers {
+    set remainder = num - ((num / 2) * 2)
+    if (remainder == 0) {
+        continue
+    }
+    print(num)
+}

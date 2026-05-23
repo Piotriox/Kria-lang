@@ -63,19 +63,79 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.current_token() {
             Token::Set => self.parse_assignment(),
+            Token::For => self.parse_for_in(),
             Token::Print => self.parse_print(),
             Token::If => self.parse_if_statement(),
             Token::While => self.parse_while_statement(),
             Token::Fn => self.parse_function_def(),
             Token::Return => self.parse_return(),
-            Token::Identifier(_) | Token::Number(_) | Token::String(_) | Token::True | Token::False | Token::Null | Token::LParen => {
-                // Try to parse as expression statement (e.g., function call)
-                let expr = self.parse_expression()?;
+            Token::Break => {
+                self.advance();
                 self.expect_statement_end()?;
-                Ok(Statement::Expression(expr))
+                Ok(Statement::Break)
             }
+            Token::Continue => {
+                self.advance();
+                self.expect_statement_end()?;
+                Ok(Statement::Continue)
+            }
+            Token::Identifier(_)
+            | Token::Number(_)
+            | Token::String(_)
+            | Token::True
+            | Token::False
+            | Token::Null
+            | Token::LParen
+            | Token::LBracket
+            | Token::Hash => self.parse_expression_or_index_assign(),
             _ => Err(format!("Unexpected token: {:?}", self.current_token())),
         }
+    }
+
+    fn parse_expression_or_index_assign(&mut self) -> Result<Statement, String> {
+        let expr = self.parse_expression()?;
+        if self.current_token() == &Token::Equal {
+            match expr {
+                Expression::Index { object, index } => {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.expect_statement_end()?;
+                    Ok(Statement::IndexAssign {
+                        object,
+                        index,
+                        value: Box::new(value),
+                    })
+                }
+                _ => Err("Only array index expressions can be assigned without 'set'".to_string()),
+            }
+        } else {
+            self.expect_statement_end()?;
+            Ok(Statement::Expression(expr))
+        }
+    }
+
+    fn parse_for_in(&mut self) -> Result<Statement, String> {
+        self.expect(Token::For)?;
+        let name = match self.current_token() {
+            Token::Identifier(n) => {
+                let n_clone = n.clone();
+                self.advance();
+                n_clone
+            }
+            _ => return Err("Expected variable name after 'for'".to_string()),
+        };
+        self.expect(Token::In)?;
+        let iterable = self.parse_expression()?;
+        while self.current_token() == &Token::Newline {
+            self.advance();
+        }
+        let body = self.parse_block()?;
+        self.expect_statement_end()?;
+        Ok(Statement::ForIn {
+            name,
+            iterable: Box::new(iterable),
+            body,
+        })
     }
     
     fn parse_while_statement(&mut self) -> Result<Statement, String> {
@@ -395,8 +455,62 @@ impl Parser {
                     expr: Box::new(expr),
                 })
             }
-            _ => self.parse_primary(),
+            _ => {
+                let primary = self.parse_primary()?;
+                self.parse_postfix(primary)
+            }
         }
+    }
+
+    fn parse_postfix(&mut self, mut expr: Expression) -> Result<Expression, String> {
+        loop {
+            match self.current_token() {
+                Token::LBracket => {
+                    self.advance();
+                    let index = self.parse_expression()?;
+                    self.expect(Token::RBracket)?;
+                    expr = Expression::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                }
+                Token::Dot => {
+                    self.advance();
+                    let member = match self.current_token() {
+                        Token::Identifier(name) => {
+                            let m = name.clone();
+                            self.advance();
+                            m
+                        }
+                        _ => return Err("Expected member name after '.'".to_string()),
+                    };
+                    expr = Expression::MemberAccess {
+                        object: Box::new(expr),
+                        member,
+                    };
+                }
+                _ => break,
+            }
+        }
+        Ok(expr)
+    }
+
+    fn parse_array_literal(&mut self, mutable: bool) -> Result<Expression, String> {
+        self.expect(Token::LBracket)?;
+        let mut elements = Vec::new();
+        if self.current_token() != &Token::RBracket {
+            loop {
+                elements.push(self.parse_expression()?);
+                if self.current_token() == &Token::RBracket {
+                    break;
+                }
+                if self.current_token() == &Token::Comma {
+                    self.advance();
+                }
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(Expression::Literal(Literal::Array { elements, mutable }))
     }
 
     fn parse_primary(&mut self) -> Result<Expression, String> {
@@ -446,12 +560,12 @@ impl Parser {
                     self.advance();
                     let args = self.parse_argument_list()?;
                     self.expect(Token::RParen)?;
-                    Ok(Expression::FunctionCall {
+                    self.parse_postfix(Expression::FunctionCall {
                         name: name_val,
                         args,
                     })
                 } else {
-                    Ok(Expression::Identifier(name_val))
+                    self.parse_postfix(Expression::Identifier(name_val))
                 }
             }
             Token::Fn => {
@@ -471,7 +585,12 @@ impl Parser {
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(Token::RParen)?;
-                Ok(expr)
+                self.parse_postfix(expr)
+            }
+            Token::LBracket => self.parse_array_literal(true),
+            Token::Hash => {
+                self.advance();
+                self.parse_array_literal(false)
             }
             _ => Err(format!("Unexpected token in expression: {:?}", self.current_token())),
         }

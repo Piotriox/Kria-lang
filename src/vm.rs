@@ -1,7 +1,15 @@
 use crate::bytecode::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
+pub struct ArrayData {
+    pub mutable: bool,
+    pub elements: RefCell<Vec<Value>>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Number(i64),
     String(Arc<str>),
@@ -12,6 +20,40 @@ pub enum Value {
         num_params: u32,
         upvalues: Vec<Value>,
     },
+    Array(Rc<ArrayData>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Null, Value::Null) => true,
+            (
+                Value::Function {
+                    bytecode_offset: a_off,
+                    num_params: a_params,
+                    upvalues: a_up,
+                },
+                Value::Function {
+                    bytecode_offset: b_off,
+                    num_params: b_params,
+                    upvalues: b_up,
+                },
+            ) => a_off == b_off && a_params == b_params && a_up == b_up,
+            (Value::Array(a), Value::Array(b)) => {
+                let a_elems = a.elements.borrow();
+                let b_elems = b.elements.borrow();
+                a_elems.len() == b_elems.len()
+                    && a_elems
+                        .iter()
+                        .zip(b_elems.iter())
+                        .all(|(x, y)| x == y)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -30,7 +72,37 @@ impl std::fmt::Display for Value {
                     upvalues.len()
                 )
             }
+            Value::Array(arr) => {
+                let elems = arr.elements.borrow();
+                if arr.mutable {
+                    write!(f, "[")?;
+                } else {
+                    write!(f, "#[")?;
+                }
+                for (i, v) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
         }
+    }
+}
+
+fn index_to_usize(index: Value) -> Result<usize, String> {
+    match index {
+        Value::Number(n) if n >= 0 => Ok(n as usize),
+        Value::Number(_) => Err("Array index must be non-negative".to_string()),
+        other => Err(format!("Array index must be a number, found {:?}", other)),
+    }
+}
+
+fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
+    match val {
+        Value::Array(arr) => Ok(arr),
+        other => Err(format!("Expected array, found {:?}", other)),
     }
 }
 
@@ -472,6 +544,76 @@ impl VM {
                 }
                 OP_POP => {
                     self.pop()?;
+                }
+                OP_BUILD_ARRAY => {
+                    let count = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let mutable = code[ip] != 0;
+                    ip += 1;
+
+                    let mut elements = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        elements.push(self.pop()?);
+                    }
+                    elements.reverse();
+
+                    self.stack.push(Value::Array(Rc::new(ArrayData {
+                        mutable,
+                        elements: RefCell::new(elements),
+                    })));
+                }
+                OP_INDEX_GET => {
+                    let index_val = self.pop()?;
+                    let array_val = self.pop()?;
+                    let arr = expect_array(array_val)?;
+                    let idx = index_to_usize(index_val)?;
+                    let elems = arr.elements.borrow();
+                    if idx >= elems.len() {
+                        return Err(format!("Array index {} out of bounds", idx));
+                    }
+                    self.stack.push(elems[idx].clone());
+                }
+                OP_INDEX_SET => {
+                    let value = self.pop()?;
+                    let index_val = self.pop()?;
+                    let array_val = self.pop()?;
+                    let arr = expect_array(array_val)?;
+                    if !arr.mutable {
+                        return Err("Cannot modify immutable array".to_string());
+                    }
+                    let idx = index_to_usize(index_val)?;
+                    let mut elems = arr.elements.borrow_mut();
+                    if idx >= elems.len() {
+                        return Err(format!("Array index {} out of bounds", idx));
+                    }
+                    elems[idx] = value;
+                }
+                OP_ARRAY_LEN => {
+                    let array_val = self.pop()?;
+                    let arr = expect_array(array_val)?;
+                    let len = arr.elements.borrow().len() as i64;
+                    self.stack.push(Value::Number(len));
+                }
+                OP_ARRAY_PUSH => {
+                    let value = self.pop()?;
+                    let array_val = self.pop()?;
+                    let arr = expect_array(array_val)?;
+                    if !arr.mutable {
+                        return Err("Cannot push to immutable array".to_string());
+                    }
+                    arr.elements.borrow_mut().push(value);
+                }
+                OP_ARRAY_POP => {
+                    let array_val = self.pop()?;
+                    let arr = expect_array(array_val)?;
+                    if !arr.mutable {
+                        return Err("Cannot pop from immutable array".to_string());
+                    }
+                    let mut elems = arr.elements.borrow_mut();
+                    if elems.is_empty() {
+                        return Err("Cannot pop from empty array".to_string());
+                    }
+                    self.stack.push(elems.pop().unwrap());
                 }
                 OP_INPUT => {
                     // Read type mask

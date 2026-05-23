@@ -21,6 +21,18 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     Return(Option<Expression>),
+    IndexAssign {
+        object: Box<Expression>,
+        index: Box<Expression>,
+        value: Box<Expression>,
+    },
+    ForIn {
+        name: String,
+        iterable: Box<Expression>,
+        body: Vec<Statement>,
+    },
+    Break,
+    Continue,
     Expression(Expression),
 }
 
@@ -49,6 +61,14 @@ pub enum Expression {
         types: Vec<InputType>,
         prompt: Box<Expression>,
     },
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+    },
+    MemberAccess {
+        object: Box<Expression>,
+        member: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,6 +89,10 @@ pub enum Literal {
     String(String),
     Boolean(bool),
     Null,
+    Array {
+        elements: Vec<Expression>,
+        mutable: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

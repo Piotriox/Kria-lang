@@ -9,12 +9,16 @@ pub enum Token {
     Else,
     ElseIf,
     While,
+    For,
+    In,
     Fn,
     Return,
     True,
     False,
     Null,
     Print,
+    Break,
+    Continue,
     
     // Identifiers and Literals
     Identifier(String),
@@ -43,6 +47,10 @@ pub enum Token {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
+    Hash,
+    Dot,
     Comma,
     Newline,
     
@@ -243,6 +251,22 @@ impl<'a> Lexer<'a> {
                             self.advance();
                             return Token::RBrace;
                         }
+                        '[' => {
+                            self.advance();
+                            return Token::LBracket;
+                        }
+                        ']' => {
+                            self.advance();
+                            return Token::RBracket;
+                        }
+                        '#' => {
+                            self.advance();
+                            return Token::Hash;
+                        }
+                        '.' => {
+                            self.advance();
+                            return Token::Dot;
+                        }
                         ',' => {
                             self.advance();
                             return Token::Comma;
@@ -265,6 +289,8 @@ impl<'a> Lexer<'a> {
                                 "else" => Token::Else,
                                 "elseif" => Token::ElseIf,
                                 "while" => Token::While,
+                                "for" => Token::For,
+                                "in" => Token::In,
                                 "fn" => Token::Fn,
                                 "return" => Token::Return,
                                 "true" => Token::True,
@@ -274,6 +300,8 @@ impl<'a> Lexer<'a> {
                                 "and" => Token::And,
                                 "or" => Token::Or,
                                 "not" => Token::Not,
+                                "break" => Token::Break,
+                                "continue" => Token::Continue,
                                 _ => Token::Identifier(ident),
                             };
                         }

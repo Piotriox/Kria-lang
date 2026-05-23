@@ -34,6 +34,12 @@ pub const OP_STORE_LOCAL: u8 = 29;              // Store local variable: frame_o
 pub const OP_INPUT: u8 = 30;                    // Input with type mask: type_mask (bit 0: str, bit 1: int, bit 2: float)
 pub const OP_LOAD_UPVALUE: u8 = 31;             // Load captured variable: upvalue_index
 pub const OP_STORE_UPVALUE: u8 = 32;            // Store captured variable: upvalue_index
+pub const OP_BUILD_ARRAY: u8 = 33;             // u32 count, u8 mutable
+pub const OP_INDEX_GET: u8 = 34;
+pub const OP_INDEX_SET: u8 = 35;
+pub const OP_ARRAY_LEN: u8 = 36;
+pub const OP_ARRAY_PUSH: u8 = 37;
+pub const OP_ARRAY_POP: u8 = 38;
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;

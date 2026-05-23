@@ -1,0 +1,94 @@
+print("=== Mutable Arrays ===")
+
+set arr = [10, 20, 30]
+print(arr)
+print(arr.length)
+
+set x = arr[0]
+print(x)
+
+arr[0] = 99
+print(arr[0])
+
+push(arr, 40)
+print(arr)
+print(arr.length)
+
+set last = pop(arr)
+print(last)
+print(arr)
+
+print("=== Immutable Arrays ===")
+
+set frozen = #[1, 2, 3]
+print(frozen)
+print(frozen.length)
+print(frozen[1])
+
+print("=== Nested Arrays ===")
+
+set nested = [[1, 2], [3, 4]]
+print(nested)
+print(nested[0])
+print(nested[1][0])
+
+print("=== Equality ===")
+
+set a = [1, 2]
+set b = [1, 2]
+set c = #[1, 2]
+
+if (a == b) {
+    print("mutable deep equal")
+}
+
+if (a == c) {
+    print("mutable equals immutable")
+} else {
+    print("mutable vs immutable differ")
+}
+
+print("=== For-In ===")
+
+set items = [10, 20, 30]
+for item in items {
+    print(item)
+}
+
+print("=== For-In with Break ===")
+
+set values = [5, 15, 25, 35, 45]
+print("Print until we find 25:")
+for val in values {
+    print(val)
+    if (val == 25) {
+        break
+    }
+}
+
+print("=== For-In with Continue ===")
+
+set nums = [1, 2, 3, 4, 5, 6]
+print("Print only odd numbers:")
+for n in nums {
+    set remainder = n - ((n / 2) * 2)
+    if (remainder == 0) {
+        continue
+    }
+    print(n)
+}
+
+print("=== For-In with Both Break and Continue ===")
+
+set data = [10, 20, 15, 30, 25, 40, 35]
+print("Skip evens, break at 40:")
+for item in data {
+    set remainder = item - ((item / 2) * 2)
+    if (remainder == 0) {
+        continue
+    }
+    print(item)
+    if (item == 35) {
+        break
+    }
+}

@@ -21,10 +21,19 @@ enum VarResolution {
     Global(usize),
 }
 
+struct LoopContext {
+    #[allow(dead_code)]
+    start_pos: usize,
+    continue_jumps: Vec<usize>,  // Positions of continue jumps to be patched
+    exit_jumps: Vec<usize>,      // Positions of break jumps to be patched
+}
+
 pub struct Compiler {
     bytecode: Bytecode,
     globals: HashMap<String, usize>,
     scope_stack: Vec<CompileScope>,
+    for_loop_counter: usize,
+    loop_stack: Vec<LoopContext>,
 }
 
 impl Compiler {
@@ -33,6 +42,8 @@ impl Compiler {
             bytecode: Bytecode::new(),
             globals: HashMap::new(),
             scope_stack: Vec::new(),
+            for_loop_counter: 0,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -202,6 +213,12 @@ impl Compiler {
                 }
 
                 let loop_start = self.bytecode.code.len();
+                self.loop_stack.push(LoopContext {
+                    start_pos: loop_start,
+                    continue_jumps: Vec::new(),
+                    exit_jumps: Vec::new(),
+                });
+
                 self.compile_expression(condition)?;
                 self.emit_opcode(OP_JUMP_IF_FALSE);
                 let exit_jump_pos = self.emit_u32(0);
@@ -209,7 +226,15 @@ impl Compiler {
                 self.emit_opcode(OP_JUMP);
                 self.emit_u32(loop_start as u32);
                 let loop_end = self.bytecode.code.len();
+
+                let loop_ctx = self.loop_stack.pop().unwrap();
                 self.patch_u32(exit_jump_pos, loop_end as u32);
+                for jump_pos in loop_ctx.exit_jumps {
+                    self.patch_u32(jump_pos, loop_end as u32);
+                }
+                for jump_pos in loop_ctx.continue_jumps {
+                    self.patch_u32(jump_pos, loop_start as u32);
+                }
             }
             Statement::FunctionDef { name, params, body } => {
                 let (func_offset, num_params, captures) = self.compile_function(params, body)?;
@@ -228,10 +253,112 @@ impl Compiler {
                 }
                 self.emit_opcode(OP_RETURN);
             }
+            Statement::IndexAssign { object, index, value } => {
+                self.compile_expression(object)?;
+                self.compile_expression(index)?;
+                self.compile_expression(value)?;
+                self.emit_opcode(OP_INDEX_SET);
+            }
+            Statement::ForIn { name, iterable, body } => {
+                self.compile_for_in(name, iterable, body)?;
+            }
+            Statement::Break => {
+                if self.loop_stack.is_empty() {
+                    return Err("break can only be used inside a loop".to_string());
+                }
+                self.emit_opcode(OP_JUMP);
+                let jump_pos = self.emit_u32(0);
+                self.loop_stack.last_mut().unwrap().exit_jumps.push(jump_pos);
+            }
+            Statement::Continue => {
+                if self.loop_stack.is_empty() {
+                    return Err("continue can only be used inside a loop".to_string());
+                }
+                self.emit_opcode(OP_JUMP);
+                let jump_pos = self.emit_u32(0);
+                self.loop_stack.last_mut().unwrap().continue_jumps.push(jump_pos);
+            }
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
                 self.emit_opcode(OP_POP);
             }
+        }
+
+        Ok(())
+    }
+
+    fn compile_for_in(
+        &mut self,
+        name: &str,
+        iterable: &Expression,
+        body: &[Statement],
+    ) -> Result<(), String> {
+        let loop_id = self.for_loop_counter;
+        self.for_loop_counter += 1;
+
+        let arr_name = format!("__for_arr_{}", loop_id);
+        let i_name = format!("__for_i_{}", loop_id);
+
+        self.compile_expression(iterable)?;
+        let arr_idx = self.resolve_global(&arr_name);
+        self.emit_opcode(OP_STORE_GLOBAL);
+        self.emit_u32(arr_idx as u32);
+
+        self.emit_constant(Value::Number(0));
+        let i_idx = self.resolve_global(&i_name);
+        self.emit_opcode(OP_STORE_GLOBAL);
+        self.emit_u32(i_idx as u32);
+
+        let loop_start = self.bytecode.code.len();
+        self.loop_stack.push(LoopContext {
+            start_pos: loop_start,
+            continue_jumps: Vec::new(),
+            exit_jumps: Vec::new(),
+        });
+
+        // i < arr.length
+        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_u32(i_idx as u32);
+        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_u32(arr_idx as u32);
+        self.emit_opcode(OP_ARRAY_LEN);
+        self.emit_opcode(OP_LESS);
+        self.emit_opcode(OP_JUMP_IF_FALSE);
+        let exit_jump = self.emit_u32(0);
+
+        // name = arr[i]
+        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_u32(arr_idx as u32);
+        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_u32(i_idx as u32);
+        self.emit_opcode(OP_INDEX_GET);
+        let item_resolved = self.resolve_identifier(name)?;
+        self.emit_store_var(item_resolved)?;
+
+        self.compile_block(body)?;
+
+        // continue_pos: after body, before increment
+        let continue_pos = self.bytecode.code.len();
+
+        // i = i + 1
+        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_u32(i_idx as u32);
+        self.emit_constant(Value::Number(1));
+        self.emit_opcode(OP_ADD);
+        self.emit_opcode(OP_STORE_GLOBAL);
+        self.emit_u32(i_idx as u32);
+
+        self.emit_opcode(OP_JUMP);
+        self.emit_u32(loop_start as u32);
+
+        let loop_end = self.bytecode.code.len();
+        let loop_ctx = self.loop_stack.pop().unwrap();
+        self.patch_u32(exit_jump, loop_end as u32);
+        for jump_pos in loop_ctx.exit_jumps {
+            self.patch_u32(jump_pos, loop_end as u32);
+        }
+        for jump_pos in loop_ctx.continue_jumps {
+            self.patch_u32(jump_pos, continue_pos as u32);
         }
 
         Ok(())
@@ -280,6 +407,11 @@ impl Compiler {
 
                     let idx = self.resolve_global(cond_var);
                     let loop_start = self.bytecode.code.len();
+                    self.loop_stack.push(LoopContext {
+                        start_pos: loop_start,
+                        continue_jumps: Vec::new(),
+                        exit_jumps: Vec::new(),
+                    });
                     self.emit_opcode(OP_LESS_CONST_JUMP_IF_FALSE);
                     self.emit_u32(idx as u32);
                     self.emit_i64(*limit);
@@ -288,7 +420,14 @@ impl Compiler {
                     self.emit_opcode(OP_JUMP);
                     self.emit_u32(loop_start as u32);
                     let loop_end = self.bytecode.code.len();
+                    let loop_ctx = self.loop_stack.pop().unwrap();
                     self.patch_u32(exit_pos, loop_end as u32);
+                    for jump_pos in loop_ctx.exit_jumps {
+                        self.patch_u32(jump_pos, loop_end as u32);
+                    }
+                    for jump_pos in loop_ctx.continue_jumps {
+                        self.patch_u32(jump_pos, loop_start as u32);
+                    }
                     return Ok(Some(()));
                 }
             }
@@ -347,13 +486,26 @@ impl Compiler {
     fn compile_expression(&mut self, expression: &Expression) -> Result<(), String> {
         match expression {
             Expression::Literal(literal) => {
-                let val = match literal {
-                    Literal::Number(n) => Value::Number(*n),
-                    Literal::String(s) => Value::String(Arc::from(s.as_str())),
-                    Literal::Boolean(b) => Value::Boolean(*b),
-                    Literal::Null => Value::Null,
-                };
-                self.emit_constant(val);
+                match literal {
+                    Literal::Array { elements, mutable } => {
+                        for elem in elements {
+                            self.compile_expression(elem)?;
+                        }
+                        self.emit_opcode(OP_BUILD_ARRAY);
+                        self.emit_u32(elements.len() as u32);
+                        self.bytecode.emit_byte(if *mutable { 1 } else { 0 });
+                    }
+                    _ => {
+                        let val = match literal {
+                            Literal::Number(n) => Value::Number(*n),
+                            Literal::String(s) => Value::String(Arc::from(s.as_str())),
+                            Literal::Boolean(b) => Value::Boolean(*b),
+                            Literal::Null => Value::Null,
+                            Literal::Array { .. } => unreachable!(),
+                        };
+                        self.emit_constant(val);
+                    }
+                }
             }
             Expression::Identifier(name) => {
                 let resolved = self.resolve_identifier(name)?;
@@ -400,6 +552,28 @@ impl Compiler {
                 self.emit_opcode(opcode);
             }
             Expression::FunctionCall { name, args } => {
+                match name.as_str() {
+                    "push" => {
+                        if args.len() != 2 {
+                            return Err("push() expects 2 arguments".to_string());
+                        }
+                        self.compile_expression(&args[0])?;
+                        self.compile_expression(&args[1])?;
+                        self.emit_opcode(OP_ARRAY_PUSH);
+                        self.emit_opcode(OP_NULL);
+                        return Ok(());
+                    }
+                    "pop" => {
+                        if args.len() != 1 {
+                            return Err("pop() expects 1 argument".to_string());
+                        }
+                        self.compile_expression(&args[0])?;
+                        self.emit_opcode(OP_ARRAY_POP);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+
                 for arg in args {
                     self.compile_expression(arg)?;
                 }
@@ -409,6 +583,19 @@ impl Compiler {
 
                 self.emit_opcode(OP_CALL_FUNCTION);
                 self.emit_u32(args.len() as u32);
+            }
+            Expression::Index { object, index } => {
+                self.compile_expression(object)?;
+                self.compile_expression(index)?;
+                self.emit_opcode(OP_INDEX_GET);
+            }
+            Expression::MemberAccess { object, member } => {
+                self.compile_expression(object)?;
+                if member == "length" {
+                    self.emit_opcode(OP_ARRAY_LEN);
+                } else {
+                    return Err(format!("Unknown member '{}'", member));
+                }
             }
             Expression::FunctionExpr { params, body } => {
                 let (func_offset, num_params, captures) = self.compile_function(params, body)?;

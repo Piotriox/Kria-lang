@@ -248,17 +248,25 @@ impl VM {
     }
 
     pub fn execute(&mut self, bytecode: &Bytecode) -> Result<(), String> {
+        self.execute_from(bytecode, 0)?;
+        Ok(())
+    }
+
+    /// Run bytecode from `start_ip` until end or top-level return. Returns the next IP
+    /// (for incremental REPL execution).
+    pub fn execute_from(&mut self, bytecode: &Bytecode, start_ip: usize) -> Result<usize, String> {
         let code = &bytecode.code;
         let constants = &bytecode.constants;
         let code_len = code.len();
 
-        // Keep a copy of bytecode for function calls
         self.bytecode = code.clone();
 
-        self.globals.resize(bytecode.num_globals, Value::Null);
+        if self.globals.len() < bytecode.num_globals {
+            self.globals.resize(bytecode.num_globals, Value::Null);
+        }
         let globals_len = self.globals.len();
 
-        let mut ip: usize = 0;
+        let mut ip = start_ip;
 
         while ip < code_len {
             let opcode = unsafe { *code.get_unchecked(ip) };
@@ -942,6 +950,6 @@ impl VM {
             }
         }
 
-        Ok(())
+        Ok(ip)
     }
 }

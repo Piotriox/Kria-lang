@@ -7,53 +7,53 @@ use kria::parser::Parser;
 use kria::compiler::Compiler;
 use kria::vm::VM;
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    
-    if args.len() < 2 {
-        eprintln!("Usage: {} <filename.krx>", args[0]);
-        process::exit(1);
-    }
-    
-    let filename = &args[1];
-    
-    // Read file
-    let source = match fs::read_to_string(filename) {
-        Ok(content) => content,
-        Err(e) => {
-            eprintln!("Error reading file '{}': {}", filename, e);
-            process::exit(1);
-        }
-    };
-    
-    // Lexer: tokenize
+fn print_usage(program: &str) {
+    eprintln!("Kria programming language");
+    eprintln!();
+    eprintln!("Usage:");
+    eprintln!("  {}              Start interactive REPL", program);
+    eprintln!("  {} <file.krx>   Run a Kria source file", program);
+    eprintln!("  {} -h, --help   Show this help", program);
+}
+
+fn run_file(filename: &str) -> Result<(), String> {
+    let source = fs::read_to_string(filename)
+        .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
+
     let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize();
-    
-    // Parser: parse into AST
-    let mut parser = Parser::new(tokens);
-    let statements = match parser.parse() {
-        Ok(stmts) => stmts,
-        Err(e) => {
-            eprintln!("Parse error: {}", e);
-            process::exit(1);
-        }
-    };
-    
-    // Compiler: generate bytecode from AST
-    let compiler = Compiler::new();
-    let bytecode = match compiler.compile(&statements) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("Compile error: {}", e);
-            process::exit(1);
-        }
-    };
 
-    // VM: execute bytecode
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse()?;
+
+    let compiler = Compiler::new();
+    let bytecode = compiler.compile(&statements)?;
+
     let mut vm = VM::new();
-    if let Err(e) = vm.execute(&bytecode) {
-        eprintln!("Runtime error: {}", e);
-        process::exit(1);
+    vm.execute(&bytecode)?;
+    Ok(())
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 {
+        if let Err(e) = kria::repl::run() {
+            eprintln!("REPL error: {}", e);
+            process::exit(1);
+        }
+        return;
+    }
+
+    match args[1].as_str() {
+        "-h" | "--help" => {
+            print_usage(&args[0]);
+        }
+        path => {
+            if let Err(e) = run_file(path) {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@ A custom programming language written in Rust, featuring a flat bytecode VM with
 
 ## Features
 
+- **Interactive REPL** — run `kria` with no arguments
 - File extension: `.krx`
 - Flat bytecode VM with constant pool and combined instructions
 - Dynamic + strong typing
@@ -86,14 +87,35 @@ cargo build --release
 ## Running
 
 ```bash
-# Development
-cargo run -- test.krx
+# Interactive REPL (no arguments)
+cargo run --release
+# or: ./target/release/kria
 
-# Release (recommended for benchmarking)
+# Run a source file
 cargo run --release -- test.krx
-
-# Or run the binary directly after release build
 ./target/release/kria test.krx
+```
+
+### REPL
+
+Start the REPL with `kria` (no filename). Features:
+
+- **Persistent session** — variables and functions stay defined until you leave or `:reset`
+- **Auto-print** — bare expressions print their value (`2 + 2` → `4`); `print(...)` still works
+- **Multi-line input** — unclosed `{`, `(`, or `[` continue on `kria...>` until the block is complete
+- **Command history** — Up/Down arrows (via rustyline)
+- **Meta commands**: `:help`, `:reset`, `:exit` (also `:quit`)
+
+```text
+kria> set x = 10
+kria> x + 5
+15
+kria> fn double(n) {
+kria...>     return n * 2
+kria...> }
+kria> double(21)
+42
+kria> :exit
 ```
 
 Example `test.krx`:

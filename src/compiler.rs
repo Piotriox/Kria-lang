@@ -50,12 +50,28 @@ impl Compiler {
         }
     }
 
+    pub fn bytecode(&self) -> &Bytecode {
+        &self.bytecode
+    }
+
     pub fn compile(mut self, statements: &[Statement]) -> Result<Bytecode, String> {
         for statement in statements {
-            self.compile_statement(statement)?;
+            self.compile_statement(statement, false)?;
         }
         self.bytecode.num_globals = self.globals.len();
         Ok(self.bytecode)
+    }
+
+    /// Append REPL input to accumulated bytecode. Last bare expression is auto-printed.
+    pub fn compile_repl(&mut self, statements: &[Statement]) -> Result<(), String> {
+        let n = statements.len();
+        for (i, statement) in statements.iter().enumerate() {
+            let repl_print_expr =
+                i + 1 == n && matches!(statement, Statement::Expression(_));
+            self.compile_statement(statement, repl_print_expr)?;
+        }
+        self.bytecode.num_globals = self.globals.len();
+        Ok(())
     }
 
     fn emit_opcode(&mut self, op: u8) -> usize {
@@ -167,7 +183,7 @@ impl Compiler {
         Ok((func_offset, params.len() as u32, captures))
     }
 
-    fn compile_statement(&mut self, statement: &Statement) -> Result<(), String> {
+    fn compile_statement(&mut self, statement: &Statement, repl_expr_print: bool) -> Result<(), String> {
         match statement {
             Statement::Assignment { name, value } => {
                 if self.compile_special_assignment(name, value)?.is_some() {
@@ -291,7 +307,11 @@ impl Compiler {
             }
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.emit_opcode(OP_POP);
+                if repl_expr_print {
+                    self.emit_opcode(OP_PRINT);
+                } else {
+                    self.emit_opcode(OP_POP);
+                }
             }
         }
 
@@ -578,7 +598,7 @@ impl Compiler {
 
     fn compile_block(&mut self, block: &[Statement]) -> Result<(), String> {
         for statement in block {
-            self.compile_statement(statement)?;
+            self.compile_statement(statement, false)?;
         }
         Ok(())
     }

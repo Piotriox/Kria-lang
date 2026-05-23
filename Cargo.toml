@@ -7,6 +7,7 @@ authors = ["Piotriox"]
 
 [dependencies]
 indexmap = "2"
+rustyline = "14"
 
 [profile.release]
 opt-level = 3

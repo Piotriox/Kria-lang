@@ -52,6 +52,7 @@ pub enum Token {
     Hash,
     Dot,
     Comma,
+    Colon,
     Newline,
     
     // Special
@@ -270,6 +271,10 @@ impl<'a> Lexer<'a> {
                         ',' => {
                             self.advance();
                             return Token::Comma;
+                        }
+                        ':' => {
+                            self.advance();
+                            return Token::Colon;
                         }
                         '|' => {
                             self.advance();

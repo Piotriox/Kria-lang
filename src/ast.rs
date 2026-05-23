@@ -26,8 +26,13 @@ pub enum Statement {
         index: Box<Expression>,
         value: Box<Expression>,
     },
+    PropertyAssign {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
     ForIn {
-        name: String,
+        key_name: String,
+        value_name: Option<String>,
         iterable: Box<Expression>,
         body: Vec<Statement>,
     },
@@ -92,6 +97,9 @@ pub enum Literal {
     Array {
         elements: Vec<Expression>,
         mutable: bool,
+    },
+    Object {
+        fields: Vec<(String, Expression)>,
     },
 }
 

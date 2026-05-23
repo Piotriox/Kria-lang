@@ -1,0 +1,80 @@
+print("=== Object Literals ===")
+
+set user = { name: "Arda", age: 17 }
+print(user)
+print(user.name)
+print(user.age)
+
+print("=== Nested Objects ===")
+
+set profile = { city: "Istanbul" }
+set user2 = { name: "Ada", profile: profile }
+print(user2.profile.city)
+
+print("=== Bracket Access ===")
+
+set key = "name"
+print(user[key])
+print(user["age"])
+
+print("=== Mixed Access ===")
+
+set data = { scores: [10, 20] }
+print(data.scores[0])
+print(data["scores"][1])
+
+print("=== Property Assign ===")
+
+user.age = 18
+user["name"] = "Arda K"
+print(user)
+
+user.profile = { bio: "dev" }
+user.profile.city = "Ankara"
+print(user.profile)
+
+print("=== rmv ===")
+
+rmv(user.name)
+print(user.name)
+
+set k = "age"
+rmv(user[k])
+print(user)
+
+print("=== Missing Properties ===")
+
+print(user.missing)
+print(user["also_missing"])
+
+print("=== Equality (order-independent) ===")
+
+set a = { x: 1, y: 2 }
+set b = { y: 2, x: 1 }
+set c = { x: 1, y: 3 }
+
+print(a == b)
+print(a == c)
+print(a != b)
+
+print("=== Nested Equality ===")
+
+set o1 = { inner: { n: 1 } }
+set o2 = { inner: { n: 1 } }
+print(o1 == o2)
+
+print("=== for key, value in obj ===")
+
+for key, value in user {
+    print(key)
+    print(value)
+}
+
+print("=== Arrays Still Use for item ===")
+
+set arr = [1, 2, 3]
+for item in arr {
+    print(item)
+}
+
+print("=== Done ===")

@@ -87,26 +87,38 @@ impl Parser {
             | Token::Null
             | Token::LParen
             | Token::LBracket
-            | Token::Hash => self.parse_expression_or_index_assign(),
+            | Token::Hash
+            | Token::LBrace => self.parse_expression_or_target_assign(),
             _ => Err(format!("Unexpected token: {:?}", self.current_token())),
         }
     }
 
-    fn parse_expression_or_index_assign(&mut self) -> Result<Statement, String> {
+    fn parse_expression_or_target_assign(&mut self) -> Result<Statement, String> {
         let expr = self.parse_expression()?;
         if self.current_token() == &Token::Equal {
-            match expr {
+            match &expr {
                 Expression::Index { object, index } => {
                     self.advance();
                     let value = self.parse_expression()?;
                     self.expect_statement_end()?;
                     Ok(Statement::IndexAssign {
-                        object,
-                        index,
+                        object: object.clone(),
+                        index: index.clone(),
                         value: Box::new(value),
                     })
                 }
-                _ => Err("Only array index expressions can be assigned without 'set'".to_string()),
+                Expression::MemberAccess { .. } => {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.expect_statement_end()?;
+                    Ok(Statement::PropertyAssign {
+                        target: Box::new(expr),
+                        value: Box::new(value),
+                    })
+                }
+                _ => Err(
+                    "Only property or index expressions can be assigned without 'set'".to_string(),
+                ),
             }
         } else {
             self.expect_statement_end()?;
@@ -116,7 +128,7 @@ impl Parser {
 
     fn parse_for_in(&mut self) -> Result<Statement, String> {
         self.expect(Token::For)?;
-        let name = match self.current_token() {
+        let key_name = match self.current_token() {
             Token::Identifier(n) => {
                 let n_clone = n.clone();
                 self.advance();
@@ -124,6 +136,21 @@ impl Parser {
             }
             _ => return Err("Expected variable name after 'for'".to_string()),
         };
+
+        let value_name = if self.current_token() == &Token::Comma {
+            self.advance();
+            match self.current_token() {
+                Token::Identifier(n) => {
+                    let v = n.clone();
+                    self.advance();
+                    Some(v)
+                }
+                _ => return Err("Expected value variable name after ',' in for-in".to_string()),
+            }
+        } else {
+            None
+        };
+
         self.expect(Token::In)?;
         let iterable = self.parse_expression()?;
         while self.current_token() == &Token::Newline {
@@ -132,7 +159,8 @@ impl Parser {
         let body = self.parse_block()?;
         self.expect_statement_end()?;
         Ok(Statement::ForIn {
-            name,
+            key_name,
+            value_name,
             iterable: Box::new(iterable),
             body,
         })
@@ -495,6 +523,34 @@ impl Parser {
         Ok(expr)
     }
 
+    fn parse_object_literal(&mut self) -> Result<Expression, String> {
+        self.expect(Token::LBrace)?;
+        let mut fields = Vec::new();
+        if self.current_token() != &Token::RBrace {
+            loop {
+                let key = match self.current_token() {
+                    Token::Identifier(name) => {
+                        let k = name.clone();
+                        self.advance();
+                        k
+                    }
+                    _ => return Err("Expected field name in object literal".to_string()),
+                };
+                self.expect(Token::Colon)?;
+                let value = self.parse_expression()?;
+                fields.push((key, value));
+                if self.current_token() == &Token::RBrace {
+                    break;
+                }
+                if self.current_token() == &Token::Comma {
+                    self.advance();
+                }
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(Expression::Literal(Literal::Object { fields }))
+    }
+
     fn parse_array_literal(&mut self, mutable: bool) -> Result<Expression, String> {
         self.expect(Token::LBracket)?;
         let mut elements = Vec::new();
@@ -592,6 +648,7 @@ impl Parser {
                 self.advance();
                 self.parse_array_literal(false)
             }
+            Token::LBrace => self.parse_object_literal(),
             _ => Err(format!("Unexpected token in expression: {:?}", self.current_token())),
         }
     }
@@ -647,5 +704,19 @@ impl Parser {
         }
         
         Ok(types)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    #[test]
+    fn object_literal_in_assignment() {
+        let mut lexer = Lexer::new("set x = { a: 1 }");
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("parse object assignment");
     }
 }

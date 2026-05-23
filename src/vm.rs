@@ -1,4 +1,5 @@
 use crate::bytecode::*;
+use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,6 +22,12 @@ pub enum Value {
         upvalues: Vec<Value>,
     },
     Array(Rc<ArrayData>),
+    Object(Rc<ObjectData>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectData {
+    pub fields: RefCell<IndexMap<String, Value>>,
 }
 
 impl PartialEq for Value {
@@ -51,9 +58,21 @@ impl PartialEq for Value {
                         .zip(b_elems.iter())
                         .all(|(x, y)| x == y)
             }
+            (Value::Object(a), Value::Object(b)) => objects_equal(a, b),
             _ => false,
         }
     }
+}
+
+fn objects_equal(a: &Rc<ObjectData>, b: &Rc<ObjectData>) -> bool {
+    let a_fields = a.fields.borrow();
+    let b_fields = b.fields.borrow();
+    if a_fields.len() != b_fields.len() {
+        return false;
+    }
+    a_fields
+        .iter()
+        .all(|(k, v)| b_fields.get(k).map(|bv| v == bv).unwrap_or(false))
 }
 
 impl std::fmt::Display for Value {
@@ -87,7 +106,91 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Object(obj) => {
+                let fields = obj.fields.borrow();
+                write!(f, "{{")?;
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
         }
+    }
+}
+
+fn new_object() -> Value {
+    Value::Object(Rc::new(ObjectData {
+        fields: RefCell::new(IndexMap::new()),
+    }))
+}
+
+fn value_to_string_key(key: Value) -> Result<String, String> {
+    match key {
+        Value::String(s) => Ok(s.to_string()),
+        other => Err(format!("Object key must be a string, found {:?}", other)),
+    }
+}
+
+fn object_get(obj: &Value, key: &str) -> Value {
+    match obj {
+        Value::Null => Value::Null,
+        Value::Object(o) => o
+            .fields
+            .borrow()
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
+    match obj {
+        Value::Object(o) => {
+            o.fields.borrow_mut().insert(key.to_string(), value);
+            Ok(())
+        }
+        Value::Null => Err("Cannot set property on null".to_string()),
+        other => Err(format!("Expected object, found {:?}", other)),
+    }
+}
+
+fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
+    match obj {
+        Value::Object(o) => {
+            let mut fields = o.fields.borrow_mut();
+            let needs_new = match fields.get(key) {
+                None => true,
+                Some(Value::Null) => true,
+                Some(Value::Object(_)) => false,
+                Some(_) => {
+                    return Err(format!(
+                        "Cannot traverse through non-object property '{}'",
+                        key
+                    ));
+                }
+            };
+            if needs_new {
+                fields.insert(key.to_string(), new_object());
+            }
+            Ok(fields.get(key).unwrap().clone())
+        }
+        Value::Null => Err("Cannot set nested property on null".to_string()),
+        other => Err(format!("Expected object, found {:?}", other)),
+    }
+}
+
+fn object_delete(obj: &Value, key: &str) -> Result<(), String> {
+    match obj {
+        Value::Object(o) => {
+            o.fields.borrow_mut().shift_remove(key);
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        other => Err(format!("Expected object, found {:?}", other)),
     }
 }
 
@@ -564,29 +667,52 @@ impl VM {
                 }
                 OP_INDEX_GET => {
                     let index_val = self.pop()?;
-                    let array_val = self.pop()?;
-                    let arr = expect_array(array_val)?;
-                    let idx = index_to_usize(index_val)?;
-                    let elems = arr.elements.borrow();
-                    if idx >= elems.len() {
-                        return Err(format!("Array index {} out of bounds", idx));
+                    let container = self.pop()?;
+                    match container {
+                        Value::Array(arr) => {
+                            let idx = index_to_usize(index_val)?;
+                            let elems = arr.elements.borrow();
+                            if idx >= elems.len() {
+                                return Err(format!("Array index {} out of bounds", idx));
+                            }
+                            self.stack.push(elems[idx].clone());
+                        }
+                        Value::Object(_) | Value::Null => {
+                            let key = value_to_string_key(index_val)?;
+                            self.stack.push(object_get(&container, &key));
+                        }
+                        other => {
+                            return Err(format!("Cannot index into {:?}", other));
+                        }
                     }
-                    self.stack.push(elems[idx].clone());
                 }
                 OP_INDEX_SET => {
                     let value = self.pop()?;
                     let index_val = self.pop()?;
-                    let array_val = self.pop()?;
-                    let arr = expect_array(array_val)?;
-                    if !arr.mutable {
-                        return Err("Cannot modify immutable array".to_string());
+                    let container = self.pop()?;
+                    match container {
+                        Value::Array(arr) => {
+                            if !arr.mutable {
+                                return Err("Cannot modify immutable array".to_string());
+                            }
+                            let idx = index_to_usize(index_val)?;
+                            let mut elems = arr.elements.borrow_mut();
+                            if idx >= elems.len() {
+                                return Err(format!("Array index {} out of bounds", idx));
+                            }
+                            elems[idx] = value;
+                        }
+                        Value::Object(_) => {
+                            let key = value_to_string_key(index_val)?;
+                            object_set(&container, &key, value)?;
+                        }
+                        Value::Null => {
+                            return Err("Cannot set property on null".to_string());
+                        }
+                        other => {
+                            return Err(format!("Cannot index into {:?}", other));
+                        }
                     }
-                    let idx = index_to_usize(index_val)?;
-                    let mut elems = arr.elements.borrow_mut();
-                    if idx >= elems.len() {
-                        return Err(format!("Array index {} out of bounds", idx));
-                    }
-                    elems[idx] = value;
                 }
                 OP_ARRAY_LEN => {
                     let array_val = self.pop()?;
@@ -614,6 +740,140 @@ impl VM {
                         return Err("Cannot pop from empty array".to_string());
                     }
                     self.stack.push(elems.pop().unwrap());
+                }
+                OP_BUILD_OBJECT => {
+                    let count = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let mut map = IndexMap::new();
+                    let mut keys = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        let key_idx = Bytecode::read_u32(code, ip) as usize;
+                        ip += 4;
+                        keys.push(key_idx);
+                    }
+                    let mut values = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        values.push(self.pop()?);
+                    }
+                    values.reverse();
+                    for (i, key_idx) in keys.iter().enumerate() {
+                        let key = match &constants[*key_idx] {
+                            Value::String(s) => s.to_string(),
+                            _ => return Err("Object key must be a string constant".to_string()),
+                        };
+                        map.insert(key, values[i].clone());
+                    }
+                    self.stack.push(Value::Object(Rc::new(ObjectData {
+                        fields: RefCell::new(map),
+                    })));
+                }
+                OP_OBJECT_GET_CONST => {
+                    let key_idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let key = match &constants[key_idx] {
+                        Value::String(s) => s.as_ref(),
+                        _ => return Err("Object key must be a string constant".to_string()),
+                    };
+                    let obj = self.pop()?;
+                    self.stack.push(object_get(&obj, key));
+                }
+                OP_OBJECT_GET => {
+                    let key_val = self.pop()?;
+                    let obj = self.pop()?;
+                    let key = value_to_string_key(key_val)?;
+                    self.stack.push(object_get(&obj, &key));
+                }
+                OP_OBJECT_SET => {
+                    let value = self.pop()?;
+                    let key_val = self.pop()?;
+                    let obj = self.pop()?;
+                    let key = value_to_string_key(key_val)?;
+                    object_set(&obj, &key, value)?;
+                }
+                OP_OBJECT_DELETE => {
+                    let key_val = self.pop()?;
+                    let obj = self.pop()?;
+                    let key = value_to_string_key(key_val)?;
+                    object_delete(&obj, &key)?;
+                }
+                OP_OBJECT_GET_OR_CREATE_CONST => {
+                    let key_idx = Bytecode::read_u32(code, ip) as usize;
+                    ip += 4;
+                    let key = match &constants[key_idx] {
+                        Value::String(s) => s.as_ref(),
+                        _ => return Err("Object key must be a string constant".to_string()),
+                    };
+                    let obj = self.pop()?;
+                    match obj {
+                        Value::Object(_) => {
+                            self.stack.push(object_get_or_create(&obj, key)?);
+                        }
+                        Value::Null => {
+                            return Err("Cannot set nested property on null".to_string());
+                        }
+                        other => {
+                            return Err(format!("Expected object, found {:?}", other));
+                        }
+                    }
+                }
+                OP_IS_ARRAY => {
+                    let val = self.pop()?;
+                    self.stack.push(Value::Boolean(matches!(val, Value::Array(_))));
+                }
+                OP_IS_OBJECT => {
+                    let val = self.pop()?;
+                    self.stack.push(Value::Boolean(matches!(val, Value::Object(_))));
+                }
+                OP_MEMBER_LENGTH => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Array(arr) => {
+                            let len = arr.elements.borrow().len() as i64;
+                            self.stack.push(Value::Number(len));
+                        }
+                        _ => self.stack.push(Value::Null),
+                    }
+                }
+                OP_OBJECT_GET_OR_CREATE => {
+                    let key_val = self.pop()?;
+                    let obj = self.pop()?;
+                    let key = value_to_string_key(key_val)?;
+                    match obj {
+                        Value::Object(_) => {
+                            self.stack.push(object_get_or_create(&obj, &key)?);
+                        }
+                        Value::Null => {
+                            return Err("Cannot set nested property on null".to_string());
+                        }
+                        other => {
+                            return Err(format!("Expected object, found {:?}", other));
+                        }
+                    }
+                }
+                OP_OBJECT_KEYS => {
+                    let obj = self.pop()?;
+                    match obj {
+                        Value::Object(o) => {
+                            let fields = o.fields.borrow();
+                            let keys: Vec<Value> = fields
+                                .keys()
+                                .map(|k| Value::String(Arc::from(k.as_str())))
+                                .collect();
+                            self.stack.push(Value::Array(Rc::new(ArrayData {
+                                mutable: true,
+                                elements: RefCell::new(keys),
+                            })));
+                        }
+                        Value::Null => {
+                            self.stack.push(Value::Array(Rc::new(ArrayData {
+                                mutable: true,
+                                elements: RefCell::new(Vec::new()),
+                            })));
+                        }
+                        other => {
+                            return Err(format!("Expected object for keys(), found {:?}", other));
+                        }
+                    }
                 }
                 OP_INPUT => {
                     // Read type mask

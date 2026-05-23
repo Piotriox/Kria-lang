@@ -17,6 +17,7 @@ A custom programming language written in Rust, featuring a flat bytecode VM with
 - **Functions** (named and anonymous/lambda)
 - **Closures** — nested functions capture outer parameters and upvalues (copy-on-create)
 - **Arrays** — mutable `[...]` and immutable `#[...]`, indexing, `length`, `push`/`pop`, iterate with `for-in`
+- **Objects** — `{ key: value }` literals, dot/bracket access, property assign, `rmv()`, deep equality, `for key, value in obj`
 - **Return statements** with values
 - **Function parameters** and local variable scoping
 - **Input operations**: read strings, integers, and floats from stdin
@@ -276,12 +277,66 @@ for item in arr {
 
 ### Member access (`.length`)
 
-Dot syntax is used for members (e.g. `arr.length`). The same mechanism is intended for future object fields.
+Dot syntax on arrays reads `.length` as the element count. On objects, unknown dot members evaluate to `null`.
 
 ### Notes
 
 - Array capture in closures follows the same copy-on-create rules as other values.
 - `set` inside a function body still targets globals; only parameters use locals.
+
+## Objects
+
+Object literals use `key: value` pairs inside `{ }`:
+
+```kria
+set user = { name: "Arda", age: 17 }
+print(user.name)      // dot access
+print(user["age"])    // bracket access (key must be a string at runtime)
+```
+
+Missing properties return `null` (no error). Objects compare with **order-independent deep equality**: `{ x: 1, y: 2 } == { y: 2, x: 1 }` is `true`.
+
+### Property assignment
+
+Assign without `set` on the left-hand path:
+
+```kria
+user.age = 18
+user["name"] = "Arda K"
+user.profile.city = "Ankara"   // auto-creates missing intermediate objects
+```
+
+### rmv
+
+Remove a property (no error if the key is missing):
+
+```kria
+rmv(user.name)
+rmv(user[key])
+```
+
+### for-in on objects
+
+Objects require both key and value names; arrays keep the single-variable form:
+
+```kria
+for key, value in user {
+    print(key)
+    print(value)
+}
+
+for item in arr {
+    print(item)
+}
+```
+
+Using `for key, value in arr` or `for item in obj` is a **compile-time error**.
+
+### Notes
+
+- Bracket keys must be strings at runtime (numbers are not coerced).
+- `rmv` on a missing key is a silent no-op.
+- `set` inside a function body still targets globals; only parameters and upvalues are local.
 
 ## Input Operations
 

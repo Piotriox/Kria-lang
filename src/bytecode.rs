@@ -40,6 +40,17 @@ pub const OP_INDEX_SET: u8 = 35;
 pub const OP_ARRAY_LEN: u8 = 36;
 pub const OP_ARRAY_PUSH: u8 = 37;
 pub const OP_ARRAY_POP: u8 = 38;
+pub const OP_BUILD_OBJECT: u8 = 39;
+pub const OP_OBJECT_GET_CONST: u8 = 40;
+pub const OP_OBJECT_GET: u8 = 41;
+pub const OP_OBJECT_SET: u8 = 42;
+pub const OP_OBJECT_DELETE: u8 = 43;
+pub const OP_OBJECT_KEYS: u8 = 44;
+pub const OP_OBJECT_GET_OR_CREATE_CONST: u8 = 45;
+pub const OP_OBJECT_GET_OR_CREATE: u8 = 46;
+pub const OP_IS_ARRAY: u8 = 47;
+pub const OP_IS_OBJECT: u8 = 48;
+pub const OP_MEMBER_LENGTH: u8 = 49;
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;

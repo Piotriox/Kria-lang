@@ -37,6 +37,12 @@ impl ReplSession {
         let mut parser = Parser::new(tokens);
         let statements = parser.parse()?;
 
+        for stmt in &statements {
+            if matches!(stmt, crate::ast::Statement::Import { .. }) {
+                return Err("imports are not supported in the REPL yet".to_string());
+            }
+        }
+
         self.compiler.compile_repl(&statements)?;
         let bytecode = self.compiler.bytecode();
         self.next_ip = self.vm.execute_from(bytecode, self.next_ip)?;

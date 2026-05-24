@@ -67,7 +67,15 @@ impl Parser {
             Token::Print => self.parse_print(),
             Token::If => self.parse_if_statement(),
             Token::While => self.parse_while_statement(),
-            Token::Fn => self.parse_function_def(),
+            Token::Import => self.parse_import(),
+            Token::Export => {
+                self.advance();
+                if self.current_token() != &Token::Fn {
+                    return Err("export only supports functions (use: export fn name(...))".to_string());
+                }
+                self.parse_function_def(true)
+            }
+            Token::Fn => self.parse_function_def(false),
             Token::Return => self.parse_return(),
             Token::Break => {
                 self.advance();
@@ -271,7 +279,30 @@ impl Parser {
         Ok(Statement::Print(expr))
     }
 
-    fn parse_function_def(&mut self) -> Result<Statement, String> {
+    fn parse_import(&mut self) -> Result<Statement, String> {
+        self.expect(Token::Import)?;
+        let alias = match self.current_token() {
+            Token::Identifier(n) => {
+                let a = n.clone();
+                self.advance();
+                a
+            }
+            _ => return Err("Expected module alias after 'import'".to_string()),
+        };
+        self.expect(Token::From)?;
+        let path = match self.current_token() {
+            Token::String(p) => {
+                let p = p.clone();
+                self.advance();
+                p
+            }
+            _ => return Err("Expected string path after 'from'".to_string()),
+        };
+        self.expect_statement_end()?;
+        Ok(Statement::Import { alias, path })
+    }
+
+    fn parse_function_def(&mut self, exported: bool) -> Result<Statement, String> {
         self.expect(Token::Fn)?;
         
         let name = match self.current_token() {
@@ -294,7 +325,12 @@ impl Parser {
         let body = self.parse_block()?;
         self.expect_statement_end()?;
         
-        Ok(Statement::FunctionDef { name, params, body })
+        Ok(Statement::FunctionDef {
+            name,
+            params,
+            body,
+            exported,
+        })
     }
 
     fn parse_return(&mut self) -> Result<Statement, String> {
@@ -515,6 +551,15 @@ impl Parser {
                     expr = Expression::MemberAccess {
                         object: Box::new(expr),
                         member,
+                    };
+                }
+                Token::LParen => {
+                    self.advance();
+                    let args = self.parse_argument_list()?;
+                    self.expect(Token::RParen)?;
+                    expr = Expression::Call {
+                        callee: Box::new(expr),
+                        args,
                     };
                 }
                 _ => break,

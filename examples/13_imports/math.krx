@@ -1,0 +1,13 @@
+// Math module — exported API
+
+export fn add(a, b) {
+    return a + b
+}
+
+export fn mul(a, b) {
+    return a * b
+}
+
+fn secret() {
+    return 0
+}

@@ -1,10 +1,7 @@
 use std::env;
-use std::fs;
 use std::process;
 
-use kria::lexer::Lexer;
-use kria::parser::Parser;
-use kria::compiler::Compiler;
+use kria::project::compile_entry_file;
 use kria::vm::VM;
 
 fn print_usage(program: &str) {
@@ -17,17 +14,8 @@ fn print_usage(program: &str) {
 }
 
 fn run_file(filename: &str) -> Result<(), String> {
-    let source = fs::read_to_string(filename)
-        .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
-
-    let mut lexer = Lexer::new(&source);
-    let tokens = lexer.tokenize();
-
-    let mut parser = Parser::new(tokens);
-    let statements = parser.parse()?;
-
-    let compiler = Compiler::new();
-    let bytecode = compiler.compile(&statements)?;
+    let path = std::path::Path::new(filename);
+    let bytecode = compile_entry_file(path)?;
 
     let mut vm = VM::new();
     vm.execute(&bytecode)?;

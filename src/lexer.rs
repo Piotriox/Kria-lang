@@ -19,6 +19,9 @@ pub enum Token {
     Print,
     Break,
     Continue,
+    Import,
+    Export,
+    From,
     
     // Identifiers and Literals
     Identifier(String),
@@ -307,6 +310,9 @@ impl<'a> Lexer<'a> {
                                 "not" => Token::Not,
                                 "break" => Token::Break,
                                 "continue" => Token::Continue,
+                                "import" => Token::Import,
+                                "export" => Token::Export,
+                                "from" => Token::From,
                                 _ => Token::Identifier(ident),
                             };
                         }

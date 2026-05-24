@@ -5,3 +5,5 @@ pub mod bytecode;
 pub mod compiler;
 pub mod vm;
 pub mod repl;
+pub mod modules;
+pub mod project;

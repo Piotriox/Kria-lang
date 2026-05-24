@@ -19,6 +19,7 @@ pub enum Statement {
         name: String,
         params: Vec<String>,
         body: Vec<Statement>,
+        exported: bool,
     },
     Return(Option<Expression>),
     IndexAssign {
@@ -39,6 +40,10 @@ pub enum Statement {
     Break,
     Continue,
     Expression(Expression),
+    Import {
+        alias: String,
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +78,10 @@ pub enum Expression {
     MemberAccess {
         object: Box<Expression>,
         member: String,
+    },
+    Call {
+        callee: Box<Expression>,
+        args: Vec<Expression>,
     },
 }
 

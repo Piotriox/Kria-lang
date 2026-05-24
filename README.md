@@ -19,6 +19,7 @@ A custom programming language written in Rust, featuring a flat bytecode VM with
 - **Closures** — nested functions capture outer parameters and upvalues (copy-on-create)
 - **Arrays** — mutable `[...]` and immutable `#[...]`, indexing, `length`, `push`/`pop`, iterate with `for-in`
 - **Objects** — `{ key: value }` literals, dot/bracket access, property assign, `rmv()`, deep equality, `for key, value in obj`
+- **Modules** — multi-file projects with `export fn` and `import alias from "./file.krx"`
 - **Return statements** with values
 - **Function parameters** and local variable scoping
 - **Input operations**: read strings, integers, and floats from stdin
@@ -117,6 +118,36 @@ kria> double(21)
 42
 kria> :exit
 ```
+
+Imports are not supported in the REPL yet.
+
+### Modules (multi-file)
+
+Each `.krx` file is a module. Only functions marked with `export` are visible to other files.
+
+```kria
+// math.krx
+export fn add(a, b) {
+    return a + b
+}
+
+fn helper() { return 0 }   // private to this file
+
+// main.krx
+import math from "./math.krx"
+print(math.add(2, 3))
+```
+
+Run the entry file; imported modules are loaded automatically:
+
+```bash
+./target/release/kria examples/13_imports/main.krx
+```
+
+- Import path must be a relative `.krx` path (`./`, `../`)
+- Use `alias.functionName(...)` to call exported functions
+- Circular imports are rejected at compile time
+- Package imports (`import pkg` without path) are planned for KPM
 
 Example `test.krx`:
 ```kria

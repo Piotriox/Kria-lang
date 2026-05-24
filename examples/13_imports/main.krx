@@ -1,0 +1,4 @@
+import math from "./math.krx"
+
+print(math.add(2, 3))
+print(math.mul(4, 5))

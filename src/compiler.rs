@@ -36,6 +36,8 @@ pub struct Compiler {
     for_loop_counter: usize,
     path_counter: usize,
     loop_stack: Vec<LoopContext>,
+    /// import alias -> exported function name -> global index
+    import_bindings: HashMap<String, HashMap<String, usize>>,
 }
 
 impl Compiler {
@@ -47,7 +49,60 @@ impl Compiler {
             for_loop_counter: 0,
             path_counter: 0,
             loop_stack: Vec::new(),
+            import_bindings: HashMap::new(),
         }
+    }
+
+    pub fn begin_module(&mut self) {
+        self.import_bindings.clear();
+    }
+
+    pub fn bind_import(
+        &mut self,
+        alias: &str,
+        exports: &HashMap<String, usize>,
+    ) -> Result<(), String> {
+        if self.import_bindings.contains_key(alias) {
+            return Err(format!("Duplicate import alias '{}'", alias));
+        }
+        self.import_bindings.insert(alias.to_string(), exports.clone());
+        Ok(())
+    }
+
+    pub fn compile_module(
+        &mut self,
+        statements: &[Statement],
+    ) -> Result<HashMap<String, usize>, String> {
+        let mut exports = HashMap::new();
+        for statement in statements {
+            match statement {
+                Statement::Import { .. } => {}
+                Statement::FunctionDef {
+                    name,
+                    params,
+                    body,
+                    exported,
+                } => {
+                    let (func_offset, num_params, captures) =
+                        self.compile_function(params, body)?;
+                    let global_idx = self.resolve_global(name);
+                    self.emit_make_closure(func_offset, num_params, &captures);
+                    self.emit_opcode(OP_STORE_GLOBAL);
+                    self.emit_u32(global_idx as u32);
+                    if *exported {
+                        exports.insert(name.clone(), global_idx);
+                    }
+                }
+                _ => self.compile_statement(statement, false)?,
+            }
+        }
+        self.bytecode.num_globals = self.globals.len();
+        Ok(exports)
+    }
+
+    pub fn finish_bytecode(mut self) -> Bytecode {
+        self.bytecode.num_globals = self.globals.len();
+        self.bytecode
     }
 
     pub fn bytecode(&self) -> &Bytecode {
@@ -255,7 +310,12 @@ impl Compiler {
                     self.patch_u32(jump_pos, loop_start as u32);
                 }
             }
-            Statement::FunctionDef { name, params, body } => {
+            Statement::FunctionDef {
+                name,
+                params,
+                body,
+                exported: _,
+            } => {
                 let (func_offset, num_params, captures) = self.compile_function(params, body)?;
 
                 let global_idx = self.resolve_global(name);
@@ -263,6 +323,7 @@ impl Compiler {
                 self.emit_opcode(OP_STORE_GLOBAL);
                 self.emit_u32(global_idx as u32);
             }
+            Statement::Import { .. } => {}
             Statement::Return(expr) => {
                 match expr {
                     Some(e) => self.compile_expression(e)?,
@@ -772,6 +833,19 @@ impl Compiler {
                 self.emit_opcode(OP_INDEX_GET);
             }
             Expression::MemberAccess { object, member } => {
+                if let Expression::Identifier(alias) = object.as_ref() {
+                    if let Some(exports) = self.import_bindings.get(alias) {
+                        if let Some(&global_idx) = exports.get(member) {
+                            self.emit_opcode(OP_LOAD_GLOBAL);
+                            self.emit_u32(global_idx as u32);
+                            return Ok(());
+                        }
+                        return Err(format!(
+                            "Module '{}' has no exported function '{}'",
+                            alias, member
+                        ));
+                    }
+                }
                 self.compile_expression(object)?;
                 if member == "length" {
                     self.emit_opcode(OP_MEMBER_LENGTH);
@@ -781,6 +855,14 @@ impl Compiler {
                     self.emit_opcode(OP_OBJECT_GET_CONST);
                     self.emit_u32(key_idx);
                 }
+            }
+            Expression::Call { callee, args } => {
+                for arg in args {
+                    self.compile_expression(arg)?;
+                }
+                self.compile_expression(callee)?;
+                self.emit_opcode(OP_CALL_FUNCTION);
+                self.emit_u32(args.len() as u32);
             }
             Expression::FunctionExpr { params, body } => {
                 let (func_offset, num_params, captures) = self.compile_function(params, body)?;

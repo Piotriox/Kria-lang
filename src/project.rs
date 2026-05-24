@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::bytecode::Bytecode;
 use crate::compiler::Compiler;
+use crate::optimizer::optimize;
 use crate::modules::{collect_imports, load_module_graph, ModuleGraph, resolve_import_path};
 
 pub fn compile_entry_file(entry: &std::path::Path) -> Result<Bytecode, String> {
@@ -33,5 +34,5 @@ pub fn compile_graph(graph: &ModuleGraph) -> Result<Bytecode, String> {
         exports_by_path.insert(module.path.clone(), module_exports);
     }
 
-    Ok(compiler.finish_bytecode())
+    Ok(optimize(compiler.finish_bytecode()))
 }

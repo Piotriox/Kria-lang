@@ -51,6 +51,9 @@ pub const OP_OBJECT_GET_OR_CREATE: u8 = 46;
 pub const OP_IS_ARRAY: u8 = 47;
 pub const OP_IS_OBJECT: u8 = 48;
 pub const OP_MEMBER_LENGTH: u8 = 49;
+pub const OP_FOR_IN_ARRAY_HEADER: u8 = 50; // arr_g, i_g, exit; pushes item or jumps
+pub const OP_FOR_IN_ARRAY_NEXT: u8 = 51;  // i_g, loop_start
+pub const OP_LOOP_STEP_LESS: u8 = 52;      // idx, limit, step — fused counter loop
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;
@@ -91,6 +94,16 @@ impl Bytecode {
     #[inline(always)]
     pub fn read_u32(code: &[u8], ip: usize) -> u32 {
         u32::from_le_bytes([code[ip], code[ip+1], code[ip+2], code[ip+3]])
+    }
+
+    #[inline(always)]
+    pub unsafe fn read_u32_unchecked(code: &[u8], ip: usize) -> u32 {
+        Self::read_u32(code, ip)
+    }
+
+    #[inline(always)]
+    pub unsafe fn read_i64_unchecked(code: &[u8], ip: usize) -> i64 {
+        Self::read_i64(code, ip)
     }
 
     #[inline(always)]

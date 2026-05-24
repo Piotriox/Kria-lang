@@ -7,3 +7,5 @@ pub mod vm;
 pub mod repl;
 pub mod modules;
 pub mod project;
+pub mod optimizer;
+pub mod compile_opt;

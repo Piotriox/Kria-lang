@@ -1,13 +1,78 @@
 use crate::bytecode::*;
 use indexmap::IndexMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
+pub enum ArrayElements {
+    Mutable(RefCell<Vec<Value>>),
+    Immutable(Vec<Value>),
+}
+
+#[derive(Debug, Clone)]
 pub struct ArrayData {
     pub mutable: bool,
-    pub elements: RefCell<Vec<Value>>,
+    pub elements: ArrayElements,
+}
+
+impl ArrayData {
+    #[inline]
+    fn len(&self) -> usize {
+        match &self.elements {
+            ArrayElements::Mutable(c) => c.borrow().len(),
+            ArrayElements::Immutable(v) => v.len(),
+        }
+    }
+
+    #[inline]
+    fn get_cloned(&self, idx: usize) -> Option<Value> {
+        match &self.elements {
+            ArrayElements::Mutable(c) => c.borrow().get(idx).cloned(),
+            ArrayElements::Immutable(v) => v.get(idx).cloned(),
+        }
+    }
+
+    #[inline]
+    fn set_at(&self, idx: usize, value: Value) -> Result<(), String> {
+        match &self.elements {
+            ArrayElements::Mutable(c) => {
+                let mut elems = c.borrow_mut();
+                if idx >= elems.len() {
+                    return Err(format!("Array index {} out of bounds", idx));
+                }
+                elems[idx] = value;
+                Ok(())
+            }
+            ArrayElements::Immutable(_) => Err("Cannot modify immutable array".to_string()),
+        }
+    }
+
+    #[inline]
+    fn push(&self, value: Value) -> Result<(), String> {
+        match &self.elements {
+            ArrayElements::Mutable(c) => {
+                c.borrow_mut().push(value);
+                Ok(())
+            }
+            ArrayElements::Immutable(_) => Err("Cannot push to immutable array".to_string()),
+        }
+    }
+
+    #[inline]
+    fn pop(&self) -> Result<Value, String> {
+        match &self.elements {
+            ArrayElements::Mutable(c) => {
+                let mut elems = c.borrow_mut();
+                if elems.is_empty() {
+                    return Err("Cannot pop from empty array".to_string());
+                }
+                Ok(elems.pop().unwrap())
+            }
+            ArrayElements::Immutable(_) => Err("Cannot pop from immutable array".to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,8 +92,11 @@ pub enum Value {
 
 #[derive(Debug, Clone)]
 pub struct ObjectData {
-    pub fields: RefCell<IndexMap<String, Value>>,
+    pub fields: RefCell<IndexMap<Arc<str>, Value>>,
 }
+
+/// Monomorphic inline cache: (object ptr, const key index) -> field index in IndexMap.
+type ObjectGetCache = HashMap<(usize, u32), usize>;
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -49,19 +117,20 @@ impl PartialEq for Value {
                     upvalues: b_up,
                 },
             ) => a_off == b_off && a_params == b_params && a_up == b_up,
-            (Value::Array(a), Value::Array(b)) => {
-                let a_elems = a.elements.borrow();
-                let b_elems = b.elements.borrow();
-                a_elems.len() == b_elems.len()
-                    && a_elems
-                        .iter()
-                        .zip(b_elems.iter())
-                        .all(|(x, y)| x == y)
-            }
+            (Value::Array(a), Value::Array(b)) => arrays_equal(a, b),
             (Value::Object(a), Value::Object(b)) => objects_equal(a, b),
             _ => false,
         }
     }
+}
+
+fn arrays_equal(a: &Rc<ArrayData>, b: &Rc<ArrayData>) -> bool {
+    let len_a = a.len();
+    let len_b = b.len();
+    if len_a != len_b {
+        return false;
+    }
+    (0..len_a).all(|i| a.get_cloned(i).unwrap() == b.get_cloned(i).unwrap())
 }
 
 fn objects_equal(a: &Rc<ObjectData>, b: &Rc<ObjectData>) -> bool {
@@ -92,17 +161,17 @@ impl std::fmt::Display for Value {
                 )
             }
             Value::Array(arr) => {
-                let elems = arr.elements.borrow();
                 if arr.mutable {
                     write!(f, "[")?;
                 } else {
                     write!(f, "#[")?;
                 }
-                for (i, v) in elems.iter().enumerate() {
+                let len = arr.len();
+                for i in 0..len {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", v)?;
+                    write!(f, "{}", arr.get_cloned(i).unwrap_or(Value::Null))?;
                 }
                 write!(f, "]")
             }
@@ -127,11 +196,15 @@ fn new_object() -> Value {
     }))
 }
 
-fn value_to_string_key(key: Value) -> Result<String, String> {
+fn value_to_string_key(key: Value) -> Result<Arc<str>, String> {
     match key {
-        Value::String(s) => Ok(s.to_string()),
+        Value::String(s) => Ok(s),
         other => Err(format!("Object key must be a string, found {:?}", other)),
     }
+}
+
+fn arc_key(key: &str) -> Arc<str> {
+    Arc::from(key)
 }
 
 fn object_get(obj: &Value, key: &str) -> Value {
@@ -147,10 +220,51 @@ fn object_get(obj: &Value, key: &str) -> Value {
     }
 }
 
+fn object_get_const_cached(
+    cache: &mut ObjectGetCache,
+    obj: &Value,
+    key_idx: u32,
+    key: &str,
+) -> Value {
+    match obj {
+        Value::Null => Value::Null,
+        Value::Object(o) => {
+            let ptr = Rc::as_ptr(o) as usize;
+            let cache_key = (ptr, key_idx);
+            if let Some(&field_idx) = cache.get(&cache_key) {
+                let fields = o.fields.borrow();
+                if let Some((_, v)) = fields.get_index(field_idx) {
+                    return v.clone();
+                }
+                cache.remove(&cache_key);
+            }
+            let fields = o.fields.borrow_mut();
+            if let Some((idx, _, v)) = fields.get_full(key) {
+                cache.insert(cache_key, idx);
+                v.clone()
+            } else {
+                Value::Null
+            }
+        }
+        _ => Value::Null,
+    }
+}
+
 fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
-            o.fields.borrow_mut().insert(key.to_string(), value);
+            o.fields.borrow_mut().insert(arc_key(key), value);
+            Ok(())
+        }
+        Value::Null => Err("Cannot set property on null".to_string()),
+        other => Err(format!("Expected object, found {:?}", other)),
+    }
+}
+
+fn object_set_arc(obj: &Value, key: Arc<str>, value: Value) -> Result<(), String> {
+    match obj {
+        Value::Object(o) => {
+            o.fields.borrow_mut().insert(key, value);
             Ok(())
         }
         Value::Null => Err("Cannot set property on null".to_string()),
@@ -174,7 +288,7 @@ fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
                 }
             };
             if needs_new {
-                fields.insert(key.to_string(), new_object());
+                fields.insert(arc_key(key), new_object());
             }
             Ok(fields.get(key).unwrap().clone())
         }
@@ -219,7 +333,7 @@ pub struct VM {
     stack: Vec<Value>,
     globals: Vec<Value>,
     call_stack: Vec<CallFrame>,
-    bytecode: Vec<u8>,  // Keep reference to bytecode for function calls
+    object_get_cache: ObjectGetCache,
 }
 
 impl VM {
@@ -228,7 +342,7 @@ impl VM {
             stack: Vec::with_capacity(256),
             globals: Vec::new(),
             call_stack: Vec::new(),
-            bytecode: Vec::new(),
+            object_get_cache: HashMap::new(),
         }
     }
 
@@ -259,8 +373,6 @@ impl VM {
         let constants = &bytecode.constants;
         let code_len = code.len();
 
-        self.bytecode = code.clone();
-
         if self.globals.len() < bytecode.num_globals {
             self.globals.resize(bytecode.num_globals, Value::Null);
         }
@@ -287,7 +399,7 @@ impl VM {
                     }
                 }
                 OP_LOAD_LOCAL => {
-                    let offset = Bytecode::read_u32(code, ip) as usize;
+                    let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     
                     if let Some(frame) = self.call_stack.last() {
@@ -302,7 +414,7 @@ impl VM {
                     }
                 }
                 OP_STORE_LOCAL => {
-                    let offset = Bytecode::read_u32(code, ip) as usize;
+                    let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let val = self.pop()?;
                     
@@ -419,9 +531,9 @@ impl VM {
                     }
                 }
                 OP_LOOP_INC_LESS => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
-                    let limit = Bytecode::read_i64(code, ip);
+                    let limit = unsafe { Bytecode::read_i64_unchecked(code, ip) };
                     ip += 8;
                     let loop_start = ip - 13;
 
@@ -436,12 +548,34 @@ impl VM {
                         return Err("LoopIncLess expects number".to_string());
                     }
                 }
-                OP_LESS_CONST_JUMP_IF_FALSE => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                OP_LOOP_STEP_LESS => {
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
-                    let limit = Bytecode::read_i64(code, ip);
+                    let limit = unsafe { Bytecode::read_i64_unchecked(code, ip) };
                     ip += 8;
-                    let target = Bytecode::read_u32(code, ip) as usize;
+                    let step = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                    ip += 8;
+                    let loop_start = ip - 21;
+
+                    debug_assert!(idx < globals_len);
+                    let global = unsafe { self.global_unchecked(idx) };
+                    if let Value::Number(n) = *global {
+                        if n < limit {
+                            unsafe {
+                                self.set_global_unchecked(idx, Value::Number(n + step));
+                            }
+                            ip = loop_start;
+                        }
+                    } else {
+                        return Err("LoopStepLess expects number".to_string());
+                    }
+                }
+                OP_LESS_CONST_JUMP_IF_FALSE => {
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let limit = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                    ip += 8;
+                    let target = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
 
                     debug_assert!(idx < globals_len);
@@ -455,9 +589,9 @@ impl VM {
                     }
                 }
                 OP_ADD_GLOBAL => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
-                    let rhs = Bytecode::read_i64(code, ip);
+                    let rhs = unsafe { Bytecode::read_i64_unchecked(code, ip) };
                     ip += 8;
 
                     debug_assert!(idx < globals_len);
@@ -469,7 +603,7 @@ impl VM {
                     }
                 }
                 OP_INC_GLOBAL => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
 
                     debug_assert!(idx < globals_len);
@@ -481,23 +615,23 @@ impl VM {
                     }
                 }
                 OP_LOAD_GLOBAL => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     debug_assert!(idx < globals_len);
                     self.stack.push(unsafe { self.global_unchecked(idx).clone() });
                 }
                 OP_STORE_GLOBAL => {
-                    let idx = Bytecode::read_u32(code, ip) as usize;
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let val = self.pop()?;
                     debug_assert!(idx < globals_len);
                     unsafe { self.set_global_unchecked(idx, val); }
                 }
                 OP_JUMP => {
-                    ip = Bytecode::read_u32(code, ip) as usize;
+                    ip = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                 }
                 OP_JUMP_IF_FALSE => {
-                    let target = Bytecode::read_u32(code, ip) as usize;
+                    let target = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let cond = self.pop()?;
                     match cond {
@@ -510,7 +644,7 @@ impl VM {
                     }
                 }
                 OP_CONSTANT => {
-                    let const_idx = Bytecode::read_u32(code, ip) as usize;
+                    let const_idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     self.stack.push(constants[const_idx].clone());
                 }
@@ -525,8 +659,11 @@ impl VM {
                             self.stack.push(Value::Number(l + r));
                         }
                         (Value::String(l), Value::String(r)) => {
-                            let concat: Arc<str> = Arc::from(format!("{}{}", l, r));
-                            self.stack.push(Value::String(concat));
+                            let mut s =
+                                String::with_capacity(l.len() + r.len());
+                            s.push_str(&l);
+                            s.push_str(&r);
+                            self.stack.push(Value::String(Arc::from(s)));
                         }
                         (l, r) => return Err(format!(
                             "Add requires two numbers or two strings, found {:?} and {:?}", l, r)),
@@ -657,20 +794,26 @@ impl VM {
                     self.pop()?;
                 }
                 OP_BUILD_ARRAY => {
-                    let count = Bytecode::read_u32(code, ip) as usize;
+                    let count = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let mutable = code[ip] != 0;
                     ip += 1;
 
                     let mut elements = Vec::with_capacity(count);
-                    for _ in 0..count {
-                        elements.push(self.pop()?);
+                    for i in 0..count {
+                        let slot = self.stack.len() - count + i;
+                        elements.push(self.stack[slot].clone());
                     }
-                    elements.reverse();
+                    self.stack.truncate(self.stack.len() - count);
 
+                    let storage = if mutable {
+                        ArrayElements::Mutable(RefCell::new(elements))
+                    } else {
+                        ArrayElements::Immutable(elements)
+                    };
                     self.stack.push(Value::Array(Rc::new(ArrayData {
                         mutable,
-                        elements: RefCell::new(elements),
+                        elements: storage,
                     })));
                 }
                 OP_INDEX_GET => {
@@ -679,15 +822,14 @@ impl VM {
                     match container {
                         Value::Array(arr) => {
                             let idx = index_to_usize(index_val)?;
-                            let elems = arr.elements.borrow();
-                            if idx >= elems.len() {
-                                return Err(format!("Array index {} out of bounds", idx));
-                            }
-                            self.stack.push(elems[idx].clone());
+                            let val = arr
+                                .get_cloned(idx)
+                                .ok_or_else(|| format!("Array index {} out of bounds", idx))?;
+                            self.stack.push(val);
                         }
                         Value::Object(_) | Value::Null => {
                             let key = value_to_string_key(index_val)?;
-                            self.stack.push(object_get(&container, &key));
+                            self.stack.push(object_get(&container, key.as_ref()));
                         }
                         other => {
                             return Err(format!("Cannot index into {:?}", other));
@@ -700,19 +842,12 @@ impl VM {
                     let container = self.pop()?;
                     match container {
                         Value::Array(arr) => {
-                            if !arr.mutable {
-                                return Err("Cannot modify immutable array".to_string());
-                            }
                             let idx = index_to_usize(index_val)?;
-                            let mut elems = arr.elements.borrow_mut();
-                            if idx >= elems.len() {
-                                return Err(format!("Array index {} out of bounds", idx));
-                            }
-                            elems[idx] = value;
+                            arr.set_at(idx, value)?;
                         }
                         Value::Object(_) => {
                             let key = value_to_string_key(index_val)?;
-                            object_set(&container, &key, value)?;
+                            object_set_arc(&container, key, value)?;
                         }
                         Value::Null => {
                             return Err("Cannot set property on null".to_string());
@@ -725,29 +860,18 @@ impl VM {
                 OP_ARRAY_LEN => {
                     let array_val = self.pop()?;
                     let arr = expect_array(array_val)?;
-                    let len = arr.elements.borrow().len() as i64;
-                    self.stack.push(Value::Number(len));
+                    self.stack.push(Value::Number(arr.len() as i64));
                 }
                 OP_ARRAY_PUSH => {
                     let value = self.pop()?;
                     let array_val = self.pop()?;
                     let arr = expect_array(array_val)?;
-                    if !arr.mutable {
-                        return Err("Cannot push to immutable array".to_string());
-                    }
-                    arr.elements.borrow_mut().push(value);
+                    arr.push(value)?;
                 }
                 OP_ARRAY_POP => {
                     let array_val = self.pop()?;
                     let arr = expect_array(array_val)?;
-                    if !arr.mutable {
-                        return Err("Cannot pop from immutable array".to_string());
-                    }
-                    let mut elems = arr.elements.borrow_mut();
-                    if elems.is_empty() {
-                        return Err("Cannot pop from empty array".to_string());
-                    }
-                    self.stack.push(elems.pop().unwrap());
+                    self.stack.push(arr.pop()?);
                 }
                 OP_BUILD_OBJECT => {
                     let count = Bytecode::read_u32(code, ip) as usize;
@@ -766,7 +890,7 @@ impl VM {
                     values.reverse();
                     for (i, key_idx) in keys.iter().enumerate() {
                         let key = match &constants[*key_idx] {
-                            Value::String(s) => s.to_string(),
+                            Value::String(s) => Arc::clone(s),
                             _ => return Err("Object key must be a string constant".to_string()),
                         };
                         map.insert(key, values[i].clone());
@@ -776,14 +900,19 @@ impl VM {
                     })));
                 }
                 OP_OBJECT_GET_CONST => {
-                    let key_idx = Bytecode::read_u32(code, ip) as usize;
+                    let key_idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as u32;
                     ip += 4;
-                    let key = match &constants[key_idx] {
+                    let key = match &constants[key_idx as usize] {
                         Value::String(s) => s.as_ref(),
                         _ => return Err("Object key must be a string constant".to_string()),
                     };
                     let obj = self.pop()?;
-                    self.stack.push(object_get(&obj, key));
+                    self.stack.push(object_get_const_cached(
+                        &mut self.object_get_cache,
+                        &obj,
+                        key_idx,
+                        key,
+                    ));
                 }
                 OP_OBJECT_GET => {
                     let key_val = self.pop()?;
@@ -836,8 +965,7 @@ impl VM {
                     let val = self.pop()?;
                     match val {
                         Value::Array(arr) => {
-                            let len = arr.elements.borrow().len() as i64;
-                            self.stack.push(Value::Number(len));
+                            self.stack.push(Value::Number(arr.len() as i64));
                         }
                         _ => self.stack.push(Value::Null),
                     }
@@ -865,23 +993,63 @@ impl VM {
                             let fields = o.fields.borrow();
                             let keys: Vec<Value> = fields
                                 .keys()
-                                .map(|k| Value::String(Arc::from(k.as_str())))
+                                .map(|k| Value::String(Arc::clone(k)))
                                 .collect();
                             self.stack.push(Value::Array(Rc::new(ArrayData {
                                 mutable: true,
-                                elements: RefCell::new(keys),
+                                elements: ArrayElements::Mutable(RefCell::new(keys)),
                             })));
                         }
                         Value::Null => {
                             self.stack.push(Value::Array(Rc::new(ArrayData {
                                 mutable: true,
-                                elements: RefCell::new(Vec::new()),
+                                elements: ArrayElements::Mutable(RefCell::new(Vec::new())),
                             })));
                         }
                         other => {
                             return Err(format!("Expected object for keys(), found {:?}", other));
                         }
                     }
+                }
+                OP_FOR_IN_ARRAY_HEADER => {
+                    let arr_g = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let i_g = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let exit = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+
+                    let i_val = unsafe { self.global_unchecked(i_g) };
+                    let i = match *i_val {
+                        Value::Number(n) if n >= 0 => n as usize,
+                        _ => return Err("for-in index must be a non-negative number".to_string()),
+                    };
+                    let arr_val = unsafe { self.global_unchecked(arr_g).clone() };
+                    let arr = expect_array(arr_val)?;
+                    if i >= arr.len() {
+                        ip = exit;
+                    } else {
+                        let item = arr
+                            .get_cloned(i)
+                            .ok_or_else(|| format!("Array index {} out of bounds", i))?;
+                        self.stack.push(item);
+                    }
+                }
+                OP_FOR_IN_ARRAY_NEXT => {
+                    let i_g = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let loop_start = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+
+                    let global = unsafe { self.global_unchecked(i_g) };
+                    if let Value::Number(n) = *global {
+                        unsafe {
+                            self.set_global_unchecked(i_g, Value::Number(n + 1));
+                        }
+                    } else {
+                        return Err("for-in index must be a number".to_string());
+                    }
+                    ip = loop_start;
                 }
                 OP_INPUT => {
                     // Read type mask

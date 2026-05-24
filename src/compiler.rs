@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::ast::{Expression, Statement, Literal, BinaryOperator, UnaryOperator};
 use crate::bytecode::*;
+use crate::compile_opt::{fold_binary_literal, hoist_global_names, hoistable_member_pairs};
 use crate::vm::Value;
 use std::sync::Arc;
 
@@ -38,6 +39,8 @@ pub struct Compiler {
     loop_stack: Vec<LoopContext>,
     /// import alias -> exported function name -> global index
     import_bindings: HashMap<String, HashMap<String, usize>>,
+    /// Loop-invariant hoisting: (obj, member) -> temp global name
+    member_hoist: HashMap<(String, String), String>,
 }
 
 impl Compiler {
@@ -50,6 +53,7 @@ impl Compiler {
             path_counter: 0,
             loop_stack: Vec::new(),
             import_bindings: HashMap::new(),
+            member_hoist: HashMap::new(),
         }
     }
 
@@ -286,6 +290,7 @@ impl Compiler {
                     return Ok(());
                 }
 
+                self.emit_loop_hoists(body)?;
                 let loop_start = self.bytecode.code.len();
                 self.loop_stack.push(LoopContext {
                     start_pos: loop_start,
@@ -309,6 +314,7 @@ impl Compiler {
                 for jump_pos in loop_ctx.continue_jumps {
                     self.patch_u32(jump_pos, loop_start as u32);
                 }
+                self.member_hoist.clear();
             }
             Statement::FunctionDef {
                 name,
@@ -392,6 +398,25 @@ impl Compiler {
         }
     }
 
+    fn emit_loop_hoists(&mut self, body: &[Statement]) -> Result<(), String> {
+        let pairs = hoistable_member_pairs(body);
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        self.member_hoist = hoist_global_names(&pairs);
+        for (obj, member) in pairs {
+            self.compile_expression(&Expression::MemberAccess {
+                object: Box::new(Expression::Identifier(obj.clone())),
+                member: member.clone(),
+            })?;
+            let temp = self.member_hoist.get(&(obj, member)).unwrap().clone();
+            let idx = self.resolve_global(&temp);
+            self.emit_opcode(OP_STORE_GLOBAL);
+            self.emit_u32(idx as u32);
+        }
+        Ok(())
+    }
+
     fn compile_for_in_array(
         &mut self,
         item_name: &str,
@@ -427,20 +452,12 @@ impl Compiler {
             exit_jumps: Vec::new(),
         });
 
-        self.emit_opcode(OP_LOAD_GLOBAL);
-        self.emit_u32(i_idx as u32);
-        self.emit_opcode(OP_LOAD_GLOBAL);
+        let exit_jump_placeholder = self.bytecode.code.len();
+        self.emit_opcode(OP_FOR_IN_ARRAY_HEADER);
         self.emit_u32(arr_idx as u32);
-        self.emit_opcode(OP_ARRAY_LEN);
-        self.emit_opcode(OP_LESS);
-        self.emit_opcode(OP_JUMP_IF_FALSE);
-        let exit_jump = self.emit_u32(0);
+        self.emit_u32(i_idx as u32);
+        self.emit_u32(0); // patched to loop_end
 
-        self.emit_opcode(OP_LOAD_GLOBAL);
-        self.emit_u32(arr_idx as u32);
-        self.emit_opcode(OP_LOAD_GLOBAL);
-        self.emit_u32(i_idx as u32);
-        self.emit_opcode(OP_INDEX_GET);
         let item_resolved = self.resolve_identifier(item_name)?;
         self.emit_store_var(item_resolved)?;
 
@@ -448,19 +465,13 @@ impl Compiler {
 
         let continue_pos = self.bytecode.code.len();
 
-        self.emit_opcode(OP_LOAD_GLOBAL);
+        self.emit_opcode(OP_FOR_IN_ARRAY_NEXT);
         self.emit_u32(i_idx as u32);
-        self.emit_constant(Value::Number(1));
-        self.emit_opcode(OP_ADD);
-        self.emit_opcode(OP_STORE_GLOBAL);
-        self.emit_u32(i_idx as u32);
-
-        self.emit_opcode(OP_JUMP);
         self.emit_u32(loop_start as u32);
 
         let loop_end = self.bytecode.code.len();
+        self.patch_u32(exit_jump_placeholder + 9, loop_end as u32);
         let loop_ctx = self.loop_stack.pop().unwrap();
-        self.patch_u32(exit_jump, loop_end as u32);
         for jump_pos in loop_ctx.exit_jumps {
             self.patch_u32(jump_pos, loop_end as u32);
         }
@@ -611,13 +622,18 @@ impl Compiler {
                                             | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
                                                 if src == cond_var =>
                                             {
+                                                let idx = self.resolve_global(cond_var);
                                                 if *n == 1 {
-                                                    let idx = self.resolve_global(cond_var);
                                                     self.emit_opcode(OP_LOOP_INC_LESS);
                                                     self.emit_u32(idx as u32);
                                                     self.emit_i64(*limit);
-                                                    return Ok(Some(()));
+                                                } else {
+                                                    self.emit_opcode(OP_LOOP_STEP_LESS);
+                                                    self.emit_u32(idx as u32);
+                                                    self.emit_i64(*limit);
+                                                    self.emit_i64(*n);
                                                 }
+                                                return Ok(Some(()));
                                             }
                                             _ => {}
                                         }
@@ -627,6 +643,7 @@ impl Compiler {
                         }
                     }
 
+                    self.emit_loop_hoists(body)?;
                     let idx = self.resolve_global(cond_var);
                     let loop_start = self.bytecode.code.len();
                     self.loop_stack.push(LoopContext {
@@ -650,6 +667,7 @@ impl Compiler {
                     for jump_pos in loop_ctx.continue_jumps {
                         self.patch_u32(jump_pos, loop_start as u32);
                     }
+                    self.member_hoist.clear();
                     return Ok(Some(()));
                 }
             }
@@ -768,23 +786,49 @@ impl Compiler {
                 };
             }
             Expression::BinaryOp { left, op, right } => {
-                self.compile_expression(left)?;
-                self.compile_expression(right)?;
-                let opcode = match op {
-                    BinaryOperator::Add => OP_ADD,
-                    BinaryOperator::Subtract => OP_SUBTRACT,
-                    BinaryOperator::Multiply => OP_MULTIPLY,
-                    BinaryOperator::Divide => OP_DIVIDE,
-                    BinaryOperator::Equals => OP_EQUALS,
-                    BinaryOperator::NotEquals => OP_NOT_EQUALS,
-                    BinaryOperator::GreaterThan => OP_GREATER,
-                    BinaryOperator::LessThan => OP_LESS,
-                    BinaryOperator::GreaterOrEqual => OP_GREATER_EQUAL,
-                    BinaryOperator::LessOrEqual => OP_LESS_EQUAL,
-                    BinaryOperator::And => OP_AND,
-                    BinaryOperator::Or => OP_OR,
-                };
-                self.emit_opcode(opcode);
+                if let Some(val) = fold_binary_literal(left, *op, right) {
+                    self.emit_constant(val);
+                    return Ok(());
+                }
+                match op {
+                    BinaryOperator::And => {
+                        self.compile_expression(left)?;
+                        self.emit_opcode(OP_JUMP_IF_FALSE);
+                        let end = self.emit_u32(0);
+                        self.emit_opcode(OP_POP);
+                        self.compile_expression(right)?;
+                        self.patch_u32(end, self.bytecode.code.len() as u32);
+                    }
+                    BinaryOperator::Or => {
+                        self.compile_expression(left)?;
+                        self.emit_opcode(OP_JUMP_IF_FALSE);
+                        let try_right = self.emit_u32(0);
+                        self.emit_opcode(OP_JUMP);
+                        let end = self.emit_u32(0);
+                        self.patch_u32(try_right, self.bytecode.code.len() as u32);
+                        self.emit_opcode(OP_POP);
+                        self.compile_expression(right)?;
+                        self.patch_u32(end, self.bytecode.code.len() as u32);
+                    }
+                    _ => {
+                        self.compile_expression(left)?;
+                        self.compile_expression(right)?;
+                        let opcode = match op {
+                            BinaryOperator::Add => OP_ADD,
+                            BinaryOperator::Subtract => OP_SUBTRACT,
+                            BinaryOperator::Multiply => OP_MULTIPLY,
+                            BinaryOperator::Divide => OP_DIVIDE,
+                            BinaryOperator::Equals => OP_EQUALS,
+                            BinaryOperator::NotEquals => OP_NOT_EQUALS,
+                            BinaryOperator::GreaterThan => OP_GREATER,
+                            BinaryOperator::LessThan => OP_LESS,
+                            BinaryOperator::GreaterOrEqual => OP_GREATER_EQUAL,
+                            BinaryOperator::LessOrEqual => OP_LESS_EQUAL,
+                            BinaryOperator::And | BinaryOperator::Or => unreachable!(),
+                        };
+                        self.emit_opcode(opcode);
+                    }
+                }
             }
             Expression::FunctionCall { name, args } => {
                 match name.as_str() {
@@ -833,6 +877,18 @@ impl Compiler {
                 self.emit_opcode(OP_INDEX_GET);
             }
             Expression::MemberAccess { object, member } => {
+                if let Expression::Identifier(obj) = object.as_ref() {
+                    let hoisted = self
+                        .member_hoist
+                        .get(&(obj.clone(), member.clone()))
+                        .cloned();
+                    if let Some(temp) = hoisted {
+                        let idx = self.resolve_global(&temp);
+                        self.emit_opcode(OP_LOAD_GLOBAL);
+                        self.emit_u32(idx as u32);
+                        return Ok(());
+                    }
+                }
                 if let Expression::Identifier(alias) = object.as_ref() {
                     if let Some(exports) = self.import_bindings.get(alias) {
                         if let Some(&global_idx) = exports.get(member) {

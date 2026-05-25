@@ -11,6 +11,11 @@ fn print_usage(program: &str) {
     eprintln!("  {}              Start interactive REPL", program);
     eprintln!("  {} <file.krx>   Run a Kria source file", program);
     eprintln!("  {} -h, --help   Show this help", program);
+    eprintln!("  {} -v, --version Show version", program);
+}
+
+fn print_version() {
+    println!("Kria {}", env!("CARGO_PKG_VERSION"));
 }
 
 fn run_file(filename: &str) -> Result<(), String> {
@@ -36,6 +41,9 @@ fn main() {
     match args[1].as_str() {
         "-h" | "--help" => {
             print_usage(&args[0]);
+        }
+        "-v" | "--version" => {
+            print_version();
         }
         path => {
             if let Err(e) = run_file(path) {
